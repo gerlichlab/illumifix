@@ -1,0 +1,40 @@
+name: format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  format:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        os: [ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up Poetry
+        uses: snok/install-poetry@v1    # v1.3.4 at time of adoption
+        with:
+          poetry-version: "1.7.1"
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pypoetry/virtualenvs
+            ~/.cache/pytest
+          key: ${{ runner.os }}-poetry-tests-${{ hashFiles('poetry.lock') }}
+      - name: Install project
+        run: poetry sync --no-interaction --with formatting
+      - name: Run codespell
+        run: poetry run codespell --enable-colors
+      - name: Run ruff
+        run: poetry run ruff format --diff .
