@@ -1,0 +1,181 @@
+[tool.poetry]
+name = "illumifix"
+version = "0.0.1"
+description = "This project facilitates the adjustment of pixel values in microscopy images to account for systematic differences in illumination across a field of view."
+authors = ["Vince Reuter"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/gerlichlab/illumifix.git"
+keywords = ["microscopy", "FISH", "bioinformatics", "illumination"]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Typing :: Typed",
+]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+expression = "^5.0.2"
+gertils = { git = "https://github.com/gerlichlab/gertils.git", tag = "v0.6.0" }
+numpy = "*"
+ome-zarr = "^0.11.1"
+zarr = ">=2.4.12"
+
+[tool.poetry.group.coverage]
+optional = true
+
+[tool.poetry.group.coverage.dependencies]
+coverage = ">=7.5.0"
+
+[tool.poetry.group.dev]
+optional = true
+
+[tool.poetry.group.dev.dependencies]
+hypothesis = ">=6.92.1"
+pytest = "^7.2.0"
+
+[tool.poetry.group.formatting]
+optional = true
+
+[tool.poetry.group.formatting.dependencies]
+codespell = ">=2.2.4"
+ruff = "==0.7.4"  # https://github.com/astral-sh/ruff/issues/14681
+
+[tool.poetry.group.linting]
+optional = true
+
+[tool.poetry.group.linting.dependencies]
+mypy = ">=1.0.1"
+pandas-stubs = "*"
+ruff = "==0.7.4"  # https://github.com/astral-sh/ruff/issues/14681
+
+[tool.poetry.group.testsuite.dependencies]
+hypothesis = ">=6.92.1"
+pytest = ">=7.1.0"
+typer = "*"
+
+[tool.codespell]
+skip = ".git,.mypy_cache,.nox,.vscode,__pycache__,poetry.lock"
+builtin = "clear,rare,informal,usage,code,names"
+ignore-words-list = "arange,jupyter,iff,snd"
+check-filenames = true
+uri-ignore-words-list = "*"
+
+[tool.mypy]
+files = ['illumifix/*.py', 'tests/*.py']
+plugins = ["pydantic.mypy"]
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disable_error_code = "annotation-unchecked"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = "illumifix.*"
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_any_unimported = true
+disallow_any_explicit = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+implicit_optional = false
+strict_optional = true
+
+[tool.ruff]
+# Black uses line-length = 88, but allows exceptions when breaking the line
+# would lead to other rule violations. Use 100 as a maximum hard limit:
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Missing members
+    "ANN10",  # Deprecated: Missing type annotation for self/cls in (class)method
+    "D105",  # Missing docstring in magic method
+    "ANN204", # Missing return type annotation for special method
+
+    # Opinionated syntax
+    "D203", # Ignore this to instead opt for class body or docstring to possibly start right away under class.
+    "D213", # Ignore this to instead opt for summary part of docstring to be on first physical line.
+    "TRY003", # Avoid specifying long messages outside the exception class
+    "C408",  # Unnecessary `dict` call (rewrite as a literal)
+    "EM",  # Exception must not use a (f-)string literal, assign to variable first
+    "FIX002",  # Line contains TODO, consider resolving the issue
+    "D400",  # First line should end with a period
+    "D415",  # First line should end with a period, question mark, or exclamation point
+    "N818",  # Exception should be named with an Error suffix
+    "PLR0913", # Too many arguments in function definition
+    "D401", # First line of docstring should be in imperative mood
+    "N802", # Function name should be lowercase
+    "N803", # Argument name should be lowercase
+    "N806", # Variable name should be lowercase
+    "N815", # Variable in class scope should not be mixedCase.
+    "E731", # Do not assign a `lambda` expression, use a `def`
+
+    # Imports and type annotations
+    "ANN003",  # Missing type annotation for kwargs
+    "FA100",  # Missing `from __future__ import annotations`, but uses `typing.*`
+    "TCH002",  # Move third-party import `...` into a type-checking block
+    "TCH003",  # Move standard library import `...` into a type-checking block
+    "UP007",  # Use `X | Y` for type annotations
+
+    # Ruff recommends avoiding these checks when using `ruff format`. Since
+    # `ruff format` is a drop-in replacement for `black`, we avoid the same
+    # checks here (https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+    # has more details):
+    "W191",  # tab-indentation
+    "E111",  # indentation-with-invalid-multiple
+    "E114",  # indentation-with-invalid-multiple-comment
+    "E117",  # over-indented
+    "D206",  # indent-with-spaces
+    "D300",  # triple-single-quotes
+    "Q000",  # bad-quotes-inline-string
+    "Q001",  # bad-quotes-multiline-string
+    "Q002",  # bad-quotes-docstring
+    "Q003",  # avoidable-escaped-quote
+    "COM812",  # missing-trailing-comma
+    "COM819",  # prohibited-trailing-comma
+    "ISC001",  # single-line-implicit-string-concatenation
+    "ISC002",  # multi-line-implicit-string-concatenation
+    "E501",  # line-too-long
+
+    # Other
+    "A005",  # Module name shadows a Python standard-library module
+    "PLR0912",  # too many branches (of a conditional)
+    "TD002",  # missing author in TODO
+    "C901", # function too complex
+    "PLR0911", # too many return statements
+    "LOG015", # Use own logger instead
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    # Ignore some groups of checks in our test code.
+    "ANN",  # Type annotations
+    "D10",  # Missing docstrings
+    "INP001", # File `...` is part of an implicit namespace package. Add an `__init__.py`.
+
+    # Ignore some more specific checks in our test code.
+    "D401",  # First line of docstring should be in imperative mood
+    "N802",  # Function name `...` should be lowercase
+    "S101",  # Use of `assert` detected
+]
