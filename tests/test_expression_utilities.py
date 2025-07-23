@@ -1,5 +1,6 @@
 """Tests of helpers functions for working with types and functions from the expression library"""
 
+from collections.abc import Callable
 from typing import TypeVar
 
 import pytest
@@ -22,16 +23,16 @@ def gen_anything(exceptions: type | tuple[type, ...] = tuple()) -> SearchStrateg
 
 def gen_result(
     *,
-    gen_bad: SearchStrategy[_TError],
-    gen_good: SearchStrategy[_TSource],
-    gen_coinflip: SearchStrategy[bool] = st.booleans(),
+    gen_bad: Callable[[], SearchStrategy[_TError]],
+    gen_good: Callable[[], SearchStrategy[_TSource]],
+    gen_coinflip: Callable[[], SearchStrategy[bool]] = st.booleans,
 ) -> SearchStrategy[Result[_TSource, _TError]]:
-    return gen_coinflip.flatmap(
-        lambda p: gen_good.map(Result.Ok) if p else gen_bad.map(Result.Error)
+    return gen_coinflip().flatmap(
+        lambda p: gen_good().map(Result.Ok) if p else gen_bad().map(Result.Error)
     )
 
 
-@given(results=st.lists(gen_result(gen_bad=gen_anything(), gen_good=gen_anything())))
+@given(results=st.lists(gen_result(gen_bad=gen_anything, gen_good=gen_anything)))
 def test_separate__yields_correct_number_of_failures_and_successes(
     results: list[Result[object, object]],
 ):
@@ -48,7 +49,7 @@ def test_separate__yields_correct_number_of_failures_and_successes(
     assert len(goods) == exp_num_good
 
 
-@given(results=st.lists(gen_result(gen_bad=st.integers(), gen_good=st.integers())))
+@given(results=st.lists(gen_result(gen_bad=st.integers, gen_good=st.integers)))
 def test_separate__preserves_element_order(results: list[Result[object, object]]):
     """The order of the elements in each result should be the same as in the original collection."""
     bads, goods = expr_util.separate(results)
@@ -79,12 +80,17 @@ def test_separate__preserves_element_order(results: list[Result[object, object]]
 
 
 @given(
-    results=st.sampled_from((st.booleans, lambda: st.just(True))).flatmap(
+    results=st.sampled_from(
+        (
+            st.booleans,
+            lambda: st.just(True),  # noqa: FBT003
+        )
+    ).flatmap(
         lambda gen_flip: st.lists(
             gen_result(
-                gen_good=gen_anything(),
-                gen_bad=gen_anything(),
-                gen_coinflip=gen_flip(),
+                gen_good=gen_anything,
+                gen_bad=gen_anything,
+                gen_coinflip=gen_flip,
             )
         )
     )
@@ -103,8 +109,8 @@ def test_sequence_accumulate_errors__result_wrapper_is_correct(
 @given(
     results=st.lists(
         gen_result(
-            gen_bad=st.integers(),  # Constrain the element type for simpler equality checking / assertion.
-            gen_good=gen_anything(),
+            gen_bad=st.integers,  # Constrain the element type for simpler equality checking / assertion.
+            gen_good=gen_anything,
         )
     ).filter(lambda results: any(res.is_error() for res in results))
 )
@@ -122,9 +128,11 @@ def test_sequence_accumulate_errors__preserves_element_order_of_failures(
 @given(
     results=st.lists(
         gen_result(
-            gen_bad=gen_anything(),
-            gen_good=st.integers(),  # Constrain the element type for simpler equality checking / assertion.
-            gen_coinflip=st.just(True),  # Generate all Result.Ok values.
+            gen_bad=gen_anything,
+            # Constrain the element type for simpler equality checking / assertion.
+            gen_good=st.integers,
+            # Generate all Result.Ok values.
+            gen_coinflip=lambda: st.just(True),  # noqa: FBT003
         )
     )
 )

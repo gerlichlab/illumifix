@@ -44,7 +44,7 @@ def _build_dataset(dims: tuple[int, ...], dtype: str = DEFAULT_DATA_TYPE) -> np.
 
 LEGIT_TARGET_TYPES = [CanonicalImageDimensions, DimensionsForIlluminationCorrectionScaling]
 NON_TIME_DIMENSIONS = (4, 3, 2, 2)
-BASE_DATA_DIMENSIONS = (5,) + NON_TIME_DIMENSIONS
+BASE_DATA_DIMENSIONS = (5, *NON_TIME_DIMENSIONS)
 BASE_DATA = _build_dataset(BASE_DATA_DIMENSIONS)
 
 

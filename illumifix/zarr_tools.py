@@ -5,7 +5,7 @@ import re
 from collections import Counter, OrderedDict
 from collections.abc import Iterable, Mapping
 from enum import Enum
-from typing import Protocol, TypeAlias, TypeVar
+from typing import Optional, Protocol, TypeAlias, TypeVar
 
 import attrs
 import numpy as np
@@ -325,7 +325,7 @@ def _get_fields(axis_map: _AM | type[_AM]) -> Iterable[attrs.Attribute]:
 
 
 def _iter_attr_names(cls: type) -> Iterable[str]:
-    # TODO: refine the argument type here, upper bounding as an attrs class.
+    # NB: would be nice to refine the argument type here, upper bounding as an attrs class.
     for attr in _get_fields(cls):
         yield attr.name
 
