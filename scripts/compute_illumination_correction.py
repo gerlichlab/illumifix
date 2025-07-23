@@ -11,14 +11,17 @@ from pathlib import Path
 from typing import TypeAlias
 
 import numpy as np
+from ome_zarr.axes import Axes
 import zarr
 from expression import Result, fst, result, snd
 from expression.collections import TypedArray
 from gertils.pathtools import ExtantFile, ExtantFolder, NonExtantPath, PathWrapperException
 
+from illumifix import PROJECT_NAME, ZARR_FORMAT
 from illumifix.expression_utilities import sequence_accumulate_errors, traverse_accumulate_errors
 from illumifix.zarr_tools import (
     CanonicalImageDimensions,
+    ChannelMeta,
     DimensionsForIlluminationCorrectionScaling,
     ZarrAxis,
     parse_single_array_and_dimensions_from_zarr_group,
@@ -34,12 +37,21 @@ def _parse_cmdl(cmdl: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--path-list-file",
-        type=ExtantFile.from_string,
         required=True,
+        type=ExtantFile.from_string,
         help="Path to file listing the paths in which to find images",
     )
     parser.add_argument(
-        "-O", "--output-path", type=NonExtantPath.from_string, help="Path to which to write output"
+        "-O", 
+        "--output-path", 
+        required=True,
+        type=NonExtantPath.from_string, 
+        help="Path to which to write output",
+    )
+    parser.add_argument(
+        "--version-name", 
+        required=True, 
+        help="Name for the version of the weights/scalings to be produced by this run of the program",
     )
     parser.add_argument(
         "--overwrite", action="store_true", help="Allow overwriting of existing weights/scalings"
@@ -158,7 +170,7 @@ def expand_target_folder(folder: ExtantFolder) -> Result[list[ExtantFolder], Pat
 def average_all_data_per_channel(
     canonical_dimensions: CanonicalImageDimensions,
     data_pairs: list[tuple[ExtantFolder, tuple[zarr.Array, CanonicalImageDimensions]]],
-) -> Result[tuple[list[np.ndarray], list[Path]], list[PathErrPair]]:
+) -> Result[tuple[list[tuple[ChannelMeta, np.ndarray]], list[Path]], list[PathErrPair]]:
     print("Averaging data per image channel")
 
     def proc_one(
@@ -176,7 +188,7 @@ def average_all_data_per_channel(
             case (result.Result(tag="error", error=messages), result.Result(tag="ok", ok=_)):
                 return Result.Error([f"{len(messages)} problem(s): {', '.join(messages)}"])
             case (result.Result(tag="error", error=e), result.Result(tag="error", error=es)):
-                return Result.Error(es + [e])
+                return Result.Error([*es, e])
             case unknown:
                 raise Exception(f"MatchError (type {type(unknown).__name__}): {unknown}")
 
@@ -216,7 +228,7 @@ def average_all_data_per_channel(
 
 
 def workflow(
-    *, base_paths: Iterable[Path], output_path: NonExtantPath, overwrite: bool = False
+    *, base_paths: Iterable[Path], output_path: NonExtantPath, version_name: str, overwrite: bool = False
 ) -> None:
     # Extend the declared target to the base path of the images.
     match (
@@ -237,6 +249,8 @@ def workflow(
             )
         )
     ):
+        case result.Result(tag="error", error=path_message_pairs):
+            raise Exception(f"{len(path_message_pairs)} problem(s): {path_message_pairs}")
         case result.Result(tag="ok", ok=(weights, paths)):
             assert weights.ndim == 4, f"Weights should be 4D, not {weights.ndim}D"
             assert (
@@ -253,20 +267,21 @@ def workflow(
             arr[:] = weights
             zarr_metadata_file: Path = outroot / ".zattrs"
             logging.info("Writing metadata: %s", zarr_metadata_file)
-            # TODO: add the versioning metadata.
             with zarr_metadata_file.open(mode="w") as meta_file:
                 json.dump(
                     {
-                        "data_paths": list(map(str, paths)),
+                        PROJECT_NAME: {
+                            "version": version_name, 
+                            "input_paths": list(map(str, paths)),
+                        },
+                        "channels": [], # TODO: need implementation
                         "multiscales": [
                             {
-                                "axes": [
-                                    {"name": "t", "type": "time"},
-                                    {"name": "c", "type": "channel"},
-                                    {"name": "y", "type": "space"},
-                                    {"name": "x", "type": "space"},
-                                ]
-                            }
+                                "axes": Axes(
+                                    [ax.name for ax in [ZarrAxis.T, ZarrAxis.C, ZarrAxis.Y, ZarrAxis.X]],
+                                    fmt=ZARR_FORMAT,
+                                ).to_list()
+                            },
                         ],
                     },
                     meta_file,
@@ -275,15 +290,15 @@ def workflow(
             # TODO: create the heatmap of the weights and write to disk
             logging.info("Generating visualization of the weights/scalings")
             visualization_output_path: Path = output_path.path / "visualization"
+            raise NotImplementedError(
+                "Visualization of the weights/scalings has not yet been implemented."
+            )
             logging.info(
                 "Writing visualization of the weights/scalings to disk: %s",
                 visualization_output_path,
             )
-            raise NotImplementedError(
-                "Visualization of the weights/scalings has not yet been implemented."
-            )
-        case result.Result(tag="error", error=path_message_pairs):
-            raise Exception(f"{len(path_message_pairs)} problem(s): {path_message_pairs}")
+        case unknown:
+            raise Exception(f"Expected an expression.Result-wrapped value but got a {type(unknown).__name__}")
 
 
 def main(cmdl: list[str]) -> None:
@@ -293,7 +308,12 @@ def main(cmdl: list[str]) -> None:
     with open(pathlist) as fh:
         raw_base_paths: list[Path] = [Path(line.strip()) for line in fh.readlines() if line.strip()]
     logging.info("Running workflow with %d base paths", len(raw_base_paths))
-    workflow(base_paths=raw_base_paths, output_path=opts.output_path, overwrite=opts.overwrite)
+    workflow(
+        base_paths=raw_base_paths, 
+        output_path=opts.output_path, 
+        version_name=opts.version_name,
+        overwrite=opts.overwrite,
+    )
 
 
 if __name__ == "__main__":
