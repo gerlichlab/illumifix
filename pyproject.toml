@@ -179,3 +179,11 @@ ignore = [
     "N802",  # Function name `...` should be lowercase
     "S101",  # Use of `assert` detected
 ]
+"scripts/*.py" = [
+    # In scripts, we don't care about docstrings for functions, classes, etc.
+    "D101", # Missing docstring in public class
+    "D102", # Missing docstring in public method
+    "D103", # Missing docstring in public function
+    # In scripts, we also don't care about custom exception types since the error is usually fatal.
+    "TRY002", # Create your own exception
+]
