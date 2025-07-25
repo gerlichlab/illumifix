@@ -5,14 +5,18 @@ import re
 from collections import Counter, OrderedDict
 from collections.abc import Iterable, Mapping
 from enum import Enum
+import json
+from pathlib import Path
 from typing import Optional, Protocol, TypeAlias, TypeVar
 
 import attrs
 import numpy as np
+from ome_zarr.io import ZarrLocation
 import zarr
 import zarr.attrs
 from expression import Option, Result, result
 from expression.collections import TypedArray
+from gertils import ExtantFolder
 
 from illumifix.expression_utilities import sequence_accumulate_errors
 
@@ -110,14 +114,14 @@ class Channels:
     """A representation of the collection of channels for a particular image."""
 
     count = attrs.field(validator=[attrs.validators.instance_of(int), attrs.validators.gt(0)])  # type: int
-    values: tuple[ChannelMeta, ...] = attrs.field(
+    values = attrs.field(
         validator=[
             attrs.validators.instance_of(tuple),
             _all_are_channels,
             _channel_indices_are_legal,
             _channel_names_are_unique,
         ]
-    )
+    ) # type: tuple[ChannelMeta, ...]
 
     @classmethod
     def from_count_and_metas(
@@ -159,10 +163,10 @@ def _parse_channel_value(*, index: int, value: object) -> Result[ChannelMeta, st
 
 
 def parse_channel_meta_maybe(key: str, value: object) -> Option[Result[ChannelMeta, list[str]]]:
-    return _parse_channel_key(key).map(lambda index: _parse_channel_value(index=index, data=value))
+    return _parse_channel_key(key).map(lambda index: _parse_channel_value(index=index, value=value))
 
 
-def parse_channels(metadata: Mapping[str, object]) -> Result[Channels, list[str]]:
+def parse_channels_from_mapping(metadata: Mapping[str, object]) -> Result[Channels, list[str]]:
     n_ch_key: str = "channelCount"
 
     return (
@@ -171,9 +175,33 @@ def parse_channels(metadata: Mapping[str, object]) -> Result[Channels, list[str]
         .bind(
             lambda n_ch: sequence_accumulate_errors(
                 TypedArray.of_seq(metadata.items()).choose(lambda kv: parse_channel_meta_maybe(*kv))
-            ).bind(lambda metas: Channels.from_count_and_metas(n_ch, metas).map(lambda msg: [msg]))
+            ).bind(lambda metas: Channels.from_count_and_metas(n_ch, metas).map_error(lambda msg: [msg]))
         )
     )
+
+
+def parse_channels_from_zarr(loc: Path | ExtantFolder | ZarrLocation) -> Result[Channels, list[str]]:
+    zarr_path: ZarrLocation
+    match loc:
+        case Path():
+            zarr_path = ZarrLocation(loc)
+        case ExtantFolder():
+            zarr_path = ZarrLocation(loc.path)
+        case ZarrLocation():
+            zarr_path = loc
+        case unknown:
+            raise TypeError(f"Cannot parse channels from value of type {type(unknown).__name__}")
+    return Option\
+        .of_optional(zarr_path.root_attrs.get("metadata"))\
+        .to_result([f"Missing metadata key in ZARR root attributes; {len(zarr_path.root_attrs.keys())} key(s): {', '.join(zarr_path.root_attrs.keys())}"])\
+        .bind(parse_channels_from_mapping)
+
+
+def create_zgroup_file(*, root: Path) -> Path:
+    outpath = root / ".zgroup"
+    with outpath.open(mode="x") as outfile:
+        json.dump({"zarr_format": 2}, outfile, indent=4)
+    return outpath
 
 
 class AxisMapping(Protocol):

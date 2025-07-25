@@ -5,10 +5,11 @@ from typing import TypeVar
 
 import pytest
 from expression import Result, result
+
+import hypothesis
 from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
-
 from illumifix import expression_utilities as expr_util
 
 _TSource = TypeVar("_TSource")
@@ -33,6 +34,7 @@ def gen_result(
 
 
 @given(results=st.lists(gen_result(gen_bad=gen_anything, gen_good=gen_anything)))
+@hypothesis.settings(suppress_health_check=(hypothesis.HealthCheck.too_slow, ))
 def test_separate__yields_correct_number_of_failures_and_successes(
     results: list[Result[object, object]],
 ):

@@ -4,18 +4,21 @@ import copy
 import functools
 import random
 from collections.abc import Callable, Iterable, Mapping
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeVar
 
 import numpy as np
 import pytest
 import zarr
 from expression import Result, fst, result, snd
+from gertils import ExtantFolder
 from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hyp_npy
 from hypothesis.strategies import SearchStrategy
 from ome_zarr.axes import KNOWN_AXES as OME_AXIS_TYPES
+from ome_zarr.io import ZarrLocation
 
 from illumifix.zarr_tools import (
     ArrayWithDimensions,
@@ -26,7 +29,10 @@ from illumifix.zarr_tools import (
     DimensionsForIlluminationCorrectionScaling,
     ZarrAxis,
     compute_corrected_channels,
+    create_zgroup_file,
     parse_single_array_and_dimensions_from_zarr_group,
+    parse_channels_from_mapping,
+    parse_channels_from_zarr,
 )
 
 DEFAULT_DATA_NAME = "test_zarr_data"
@@ -920,3 +926,61 @@ def test_channels_values__must_be_tuple(args: tuple[int, tuple[ChannelMeta, ...]
     with pytest.raises(TypeError):
         Channels(count=n_ch, values=list(chs))
     # NB: no check here on the error message since it's seemingly very difficult to check substrings for this one.
+
+
+_ParseInput = TypeVar("_ParseInput", Mapping[str, object], ExtantFolder, Path, ZarrLocation)
+
+
+def _prep_parse_channels_zarr(zarr_root: Path, metadata: Mapping[str, object]) -> Path:
+    metadata_path: Path = zarr_root / ".zattrs"
+    with metadata_path.open(mode="w") as metadata_file:
+        json.dump({"metadata": metadata}, metadata_file, indent=2)
+    create_zgroup_file(root=zarr_root)
+    return zarr_root
+
+
+@pytest.mark.parametrize(
+    ("parse", "prepare"), 
+    [
+        (parse_channels_from_mapping, lambda _, meta: meta), 
+        (parse_channels_from_zarr, lambda tmp, meta: _prep_parse_channels_zarr(tmp, meta)), 
+        (parse_channels_from_zarr, lambda tmp, meta: ExtantFolder(_prep_parse_channels_zarr(tmp, meta))), 
+        (parse_channels_from_zarr, lambda tmp, meta: ZarrLocation(_prep_parse_channels_zarr(tmp, meta))), 
+    ], 
+)
+def test_parse_channels__good_example_data(
+    tmp_path: Path, 
+    parse: Callable[[_ParseInput], Result[Channels, list[str]]], 
+    prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
+) -> None:
+    channel_data: list[Mapping[str, None | float | str]] = [
+        {'emissionLambdaNm': 700.5, 'excitationLambdaNm': None, 'name': 'Far Red'}, 
+        {'emissionLambdaNm': 535.0, 'excitationLambdaNm': 488.0, 'name': 'GFP'}, 
+        {'emissionLambdaNm': 450.5, 'excitationLambdaNm': 365.0, 'name': 'DAPI'}, 
+        {'emissionLambdaNm': 610.5, 'excitationLambdaNm': 560.0, 'name': 'Red'}, 
+    ]
+    metadata: Mapping[str, object] = {
+        'axis_sizes': {'C': 4, 'X': 2048, 'Y': 2044, 'Z': 38}, 
+        'channelCount': 4, 
+        **{f"channel_{i}": ch_md for i, ch_md in enumerate(channel_data)},
+        'microscope': {
+            'immersionRefractiveIndex': 1.515, 
+            'modalityFlags': ['fluorescence', 'camera'], 
+            'objectiveMagnification': 60.0, 
+            'objectiveName': 'Plan Apo λ 60x Oil', 
+            'objectiveNumericalAperture': 1.4, 
+            'zoomMagnification': 1.0,
+        }
+    }
+    exp: Channels = Channels(
+        count=4, 
+        values=tuple(ChannelMeta(index=i, **ch_md) for i, ch_md in enumerate(channel_data)),
+    )
+    input: _ParseInput = prepare(tmp_path, metadata)
+    match parse(input):
+        case result.Result(tag="error", error=messages):
+            pytest.fail(f"Expected parse success but got a failure, with {len(messages)} message(s): {'; '.join(messages)}")
+        case result.Result(tag="ok", ok=obs):
+            assert obs == exp
+        case unknown:
+            pytest.fail(f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}")
