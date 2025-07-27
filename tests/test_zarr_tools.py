@@ -21,6 +21,7 @@ from ome_zarr.axes import KNOWN_AXES as OME_AXIS_TYPES
 from ome_zarr.io import ZarrLocation
 
 from illumifix.zarr_tools import (
+    CHANNEL_COUNT_KEY,
     ArrayWithDimensions,
     AxisMapping,
     CanonicalImageDimensions,
@@ -931,56 +932,148 @@ def test_channels_values__must_be_tuple(args: tuple[int, tuple[ChannelMeta, ...]
 _ParseInput = TypeVar("_ParseInput", Mapping[str, object], ExtantFolder, Path, ZarrLocation)
 
 
-def _prep_parse_channels_zarr(zarr_root: Path, metadata: Mapping[str, object]) -> Path:
+def _prep_parse_channels_zarr(
+    zarr_root: Path, metadata: Mapping[str, object], *, nest_metadata_under_key: bool = True
+) -> Path:
     metadata_path: Path = zarr_root / ".zattrs"
     with metadata_path.open(mode="w") as metadata_file:
-        json.dump({"metadata": metadata}, metadata_file, indent=2)
+        json.dump(
+            {"metadata": metadata} if nest_metadata_under_key else metadata, metadata_file, indent=2
+        )
     create_zgroup_file(root=zarr_root)
     return zarr_root
 
 
-@pytest.mark.parametrize(
-    ("parse", "prepare"), 
-    [
-        (parse_channels_from_mapping, lambda _, meta: meta), 
-        (parse_channels_from_zarr, lambda tmp, meta: _prep_parse_channels_zarr(tmp, meta)), 
-        (parse_channels_from_zarr, lambda tmp, meta: ExtantFolder(_prep_parse_channels_zarr(tmp, meta))), 
-        (parse_channels_from_zarr, lambda tmp, meta: ZarrLocation(_prep_parse_channels_zarr(tmp, meta))), 
-    ], 
-)
+def get_parse_channels__parse_prep_pairs(*, nest_metadata_under_key: bool = True):
+    return [
+        (parse_channels_from_mapping, lambda _, meta: meta),
+        (
+            parse_channels_from_zarr,
+            lambda tmp, meta: _prep_parse_channels_zarr(
+                tmp, meta, nest_metadata_under_key=nest_metadata_under_key
+            ),
+        ),
+        (
+            parse_channels_from_zarr,
+            lambda tmp, meta: ExtantFolder(
+                _prep_parse_channels_zarr(
+                    tmp, meta, nest_metadata_under_key=nest_metadata_under_key
+                )
+            ),
+        ),
+        (
+            parse_channels_from_zarr,
+            lambda tmp, meta: ZarrLocation(
+                _prep_parse_channels_zarr(
+                    tmp, meta, nest_metadata_under_key=nest_metadata_under_key
+                )
+            ),
+        ),
+    ]
+
+
+CANONICAL_CHANNEL_DATA: list[Mapping[str, None | float | str]] = [
+    {"emissionLambdaNm": 700.5, "excitationLambdaNm": None, "name": "Far Red"},
+    {"emissionLambdaNm": 535.0, "excitationLambdaNm": 488.0, "name": "GFP"},
+    {"emissionLambdaNm": 450.5, "excitationLambdaNm": 365.0, "name": "DAPI"},
+    {"emissionLambdaNm": 610.5, "excitationLambdaNm": 560.0, "name": "Red"},
+]
+
+
+CANONICAL_METADATA: Mapping[str, object] = {
+    "axis_sizes": {"C": 4, "X": 2048, "Y": 2044, "Z": 38},
+    CHANNEL_COUNT_KEY: 4,
+    **{f"channel_{i}": ch_md for i, ch_md in enumerate(CANONICAL_CHANNEL_DATA)},
+    "microscope": {
+        "immersionRefractiveIndex": 1.515,
+        "modalityFlags": ["fluorescence", "camera"],
+        "objectiveMagnification": 60.0,
+        "objectiveName": "Plan Apo λ 60x Oil",
+        "objectiveNumericalAperture": 1.4,
+        "zoomMagnification": 1.0,
+    },
+}
+
+
+@pytest.mark.parametrize(("parse", "prepare"), get_parse_channels__parse_prep_pairs())
 def test_parse_channels__good_example_data(
-    tmp_path: Path, 
-    parse: Callable[[_ParseInput], Result[Channels, list[str]]], 
+    tmp_path: Path,
+    parse: Callable[[_ParseInput], Result[Channels, list[str]]],
     prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
 ) -> None:
-    channel_data: list[Mapping[str, None | float | str]] = [
-        {'emissionLambdaNm': 700.5, 'excitationLambdaNm': None, 'name': 'Far Red'}, 
-        {'emissionLambdaNm': 535.0, 'excitationLambdaNm': 488.0, 'name': 'GFP'}, 
-        {'emissionLambdaNm': 450.5, 'excitationLambdaNm': 365.0, 'name': 'DAPI'}, 
-        {'emissionLambdaNm': 610.5, 'excitationLambdaNm': 560.0, 'name': 'Red'}, 
-    ]
-    metadata: Mapping[str, object] = {
-        'axis_sizes': {'C': 4, 'X': 2048, 'Y': 2044, 'Z': 38}, 
-        'channelCount': 4, 
-        **{f"channel_{i}": ch_md for i, ch_md in enumerate(channel_data)},
-        'microscope': {
-            'immersionRefractiveIndex': 1.515, 
-            'modalityFlags': ['fluorescence', 'camera'], 
-            'objectiveMagnification': 60.0, 
-            'objectiveName': 'Plan Apo λ 60x Oil', 
-            'objectiveNumericalAperture': 1.4, 
-            'zoomMagnification': 1.0,
-        }
-    }
     exp: Channels = Channels(
-        count=4, 
-        values=tuple(ChannelMeta(index=i, **ch_md) for i, ch_md in enumerate(channel_data)),
+        count=4,
+        values=tuple(
+            ChannelMeta(index=i, **ch_md) for i, ch_md in enumerate(CANONICAL_CHANNEL_DATA)
+        ),
     )
-    input: _ParseInput = prepare(tmp_path, metadata)
+    input: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
     match parse(input):
         case result.Result(tag="error", error=messages):
-            pytest.fail(f"Expected parse success but got a failure, with {len(messages)} message(s): {'; '.join(messages)}")
+            pytest.fail(
+                f"Expected parse success but got a failure, with {len(messages)} message(s): {'; '.join(messages)}"
+            )
         case result.Result(tag="ok", ok=obs):
             assert obs == exp
         case unknown:
-            pytest.fail(f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}")
+            pytest.fail(
+                f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}"
+            )
+
+
+@pytest.mark.parametrize(("parse", "prepare"), get_parse_channels__parse_prep_pairs())
+def test_parse_channels__must_have_channel_count(
+    tmp_path: Path,
+    parse: Callable[[_ParseInput], Result[Channels, list[str]]],
+    prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
+) -> None:
+    input: _ParseInput = prepare(
+        tmp_path, {k: v for k, v in CANONICAL_METADATA.items() if k != CHANNEL_COUNT_KEY}
+    )
+    match parse(input):
+        case result.Result(tag="error", error=messages):
+            assert messages == [f"Missing the key ({CHANNEL_COUNT_KEY}) for number of channels"]
+        case result.Result(tag="ok", ok=_):
+            pytest.fail("Expected parse failure but got a success")
+        case unknown:
+            pytest.fail(
+                f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}"
+            )
+
+
+def test_parse_channels_from_zarr__prohibits_path_as_raw_string(tmp_path: Path) -> None:
+    match parse_channels_from_zarr(str(tmp_path)):
+        case result.Result(tag="error", error=messages):
+            assert messages == [f"Cannot parse channels from value of type str"]
+        case result.Result(tag="ok", ok=_):
+            pytest.fail("Expected parse failure but got a success")
+        case unknown:
+            pytest.fail(
+                f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}"
+            )
+
+
+@pytest.mark.parametrize(
+    ("parse", "prepare"),
+    [
+        (parse, prep)
+        for parse, prep in get_parse_channels__parse_prep_pairs(nest_metadata_under_key=False)
+        if parse is parse_channels_from_zarr
+    ],
+)
+def test_parse_channels__fails_when_metadata_are_not_under_proper_key(
+    tmp_path: Path,
+    parse: Callable[[_ParseInput], Result[Channels, list[str]]],
+    prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
+) -> None:
+    input: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
+    match parse(input):
+        case result.Result(tag="error", error=messages):
+            assert len(messages) == 1
+            assert messages[0].startswith("Missing metadata key in ZARR root attributes")
+        case result.Result(tag="ok", ok=_):
+            pytest.fail("Expected parse failure but got a success")
+        case unknown:
+            pytest.fail(
+                f"Expected a result.Result-wrapped value but got a {type(unknown).__name__}"
+            )
