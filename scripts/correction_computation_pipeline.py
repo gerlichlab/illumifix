@@ -26,7 +26,6 @@ class CorrectionComputationPipeline(pypiper.Pipeline):
         path_list_file: ExtantFile, 
         output_root: ExtantFolder,
         version_name: str,
-        pypiper_folder: ExtantFolder,
         **pl_mgr_kwargs: Any,
     ) -> None:
         self.version_name = version_name
@@ -34,7 +33,7 @@ class CorrectionComputationPipeline(pypiper.Pipeline):
         self.visualization_folder = output_root / "visualization"
         with path_list_file.path.open(mode="r") as pathlist:
             self.input_paths: list[Path] = [Path(line.strip()) for line in pathlist.readlines() if line.strip()]
-        super().__init__(name=PIPE_NAME, outfolder=str(pypiper_folder.path), **pl_mgr_kwargs)
+        super().__init__(name=PIPE_NAME, outfolder=str(output_root.path / "pypiper"), **pl_mgr_kwargs)
 
     def stages(self) -> list[pypiper.Stage]:
         return [
@@ -83,12 +82,6 @@ def parse_cli(args: Iterable[str]) -> argparse.Namespace:
         help="Name for the version of the weights/scalings to be produced by this run of the program",
     )
     parser.add_argument(
-        "--pypiper-folder", 
-        type=ExtantFolder.from_string, 
-        required=True, 
-        help="Path to folder for pypiper output",
-    )
-    parser.add_argument(
         NO_TEE_LOGS_OPTNAME, 
         action="store_true", 
         help="Do not tee logging output from pypiper manager",
@@ -103,8 +96,9 @@ def parse_cli(args: Iterable[str]) -> argparse.Namespace:
 
 def init(opts: argparse.Namespace) -> CorrectionComputationPipeline:
     kwargs = {
+        "path_list_file": opts.path_list_file, 
+        "version_name": opts.version_name,
         "output_root": opts.output_root,
-        "pypiper_folder": opts.pypiper_folder,
     }
     if opts.do_not_tee_logs:
         kwargs["multi"] = True
