@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any, Iterable
 
-from gertils import ExtantFile, ExtantFolder, NonExtantPath
+from gertils import ExtantFile, NonExtantPath
 import pypiper
 
 from compute_illumination_correction import workflow as compute_correction
@@ -24,7 +24,7 @@ class CorrectionComputationPipeline(pypiper.Pipeline):
         self,
         *,
         path_list_file: ExtantFile, 
-        output_root: ExtantFolder,
+        output_root: Path,
         version_name: str,
         **pl_mgr_kwargs: Any,
     ) -> None:
@@ -33,7 +33,7 @@ class CorrectionComputationPipeline(pypiper.Pipeline):
         self.visualization_folder = output_root / "visualization"
         with path_list_file.path.open(mode="r") as pathlist:
             self.input_paths: list[Path] = [Path(line.strip()) for line in pathlist.readlines() if line.strip()]
-        super().__init__(name=PIPE_NAME, outfolder=str(output_root.path / "pypiper"), **pl_mgr_kwargs)
+        super().__init__(name=PIPE_NAME, outfolder=str(output_root / "pypiper"), **pl_mgr_kwargs)
 
     def stages(self) -> list[pypiper.Stage]:
         return [
