@@ -1,50 +1,60 @@
 """Helpers for working with data stored in ZARR"""
 
 import copy
+from enum import Enum
+from math import floor
 import re
 from collections import Counter, OrderedDict
 from collections.abc import Iterable, Mapping
-from enum import Enum
 import json
 from pathlib import Path
-from typing import Literal, Optional, Protocol, TypeAlias, TypeVar
+from typing import Callable, Literal, Optional, Protocol, TypeAlias
 
 import attrs
 import numpy as np
 from ome_zarr.io import ZarrLocation
 import zarr
 import zarr.attrs
-from expression import Option, Result, result
+from expression import Option, Result, fst, result, snd
 from expression.collections import TypedArray
 from gertils import ExtantFolder
 
-from illumifix.expression_utilities import sequence_accumulate_errors
+from illumifix.expression_utilities import sequence_accumulate_errors, traverse_accumulate_errors
 
 
 CHANNEL_COUNT_KEY: Literal["channelCount"] = "channelCount"
 
+ChannelIndex: TypeAlias = int
+ChannelName: TypeAlias = str
+Wavelength: TypeAlias = float
+WaveLenOpt: TypeAlias = Optional[Wavelength]
+
+
+@attrs.define(frozen=True)
+class _ZarrAxis:
+    name: str
+    typename: str
+
 
 class ZarrAxis(Enum):
-    T = "time"
-    C = "channel"
-    Z = "space"
-    Y = "space"
-    X = "space"
+    T = _ZarrAxis("t", "time")
+    C = _ZarrAxis("c", "channel")
+    Z = _ZarrAxis("z", "space")
+    Y = _ZarrAxis("y", "space")
+    X = _ZarrAxis("x", "space")
 
     @property
     def name(self) -> str:
-        return super().name.lower()
+        return self.value.name
 
     @property
     def typename(self) -> str:
-        return self.value
+        return self.value.typename
 
 
 _CHECK_POSITIVE_INT = [attrs.validators.instance_of(int), attrs.validators.gt(0)]
 
 _ATTR_AXIS_PAIRS: OrderedDict[str, ZarrAxis] = OrderedDict((ax.name, ax) for ax in ZarrAxis)
-
-Channel: TypeAlias = int
 
 
 def _check_null_or_positive_float(_, attr: attrs.Attribute, value: object) -> None:
@@ -58,12 +68,19 @@ def _check_null_or_positive_float(_, attr: attrs.Attribute, value: object) -> No
             raise TypeError(f"{attr.name} is neither null nor float, but {type(value).__name__}")
 
 
+class JsonEncoderForChannelMeta(json.JSONEncoder):
+    """Support JSON encoding of ChannelMeta instances."""
+
+    def default(self, o):
+        return attrs.asdict(o) if isinstance(o, ChannelMeta) else super().default(o)
+
+
 @attrs.define(kw_only=True, frozen=True, eq=True)
 class ChannelMeta:
-    name = attrs.field(validator=attrs.validators.instance_of(str))  # type: str
-    index = attrs.field(validator=[attrs.validators.instance_of(int), attrs.validators.ge(0)])  # type: int
-    emissionLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: Optional[float]
-    excitationLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: Optional[float]
+    name = attrs.field(validator=attrs.validators.instance_of(str))  # type: ChannelName
+    index = attrs.field(validator=[attrs.validators.instance_of(int), attrs.validators.ge(0)])  # type: ChannelIndex
+    emissionLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: WaveLenOpt
+    excitationLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: WaveLenOpt
 
 
 def _all_are_channels(_: "Channels", attr: attrs.Attribute, values: tuple[object]) -> None:
@@ -169,15 +186,28 @@ def parse_channel_meta_maybe(key: str, value: object) -> Option[Result[ChannelMe
     return _parse_channel_key(key).map(lambda index: _parse_channel_value(index=index, value=value))
 
 
-def parse_channels_from_mapping(metadata: Mapping[str, object]) -> Result[Channels, list[str]]:
+def parse_channels_from_flattened_mapping_with_count(
+    zarr_root_attrs: Mapping[str, object],
+) -> Result[Channels, list[str]]:
     return (
-        Option.of_optional(metadata.get(CHANNEL_COUNT_KEY))
-        .to_result([f"Missing the key ({CHANNEL_COUNT_KEY}) for number of channels"])
+        Option.of_optional(zarr_root_attrs.get("metadata"))
+        .to_result(
+            [
+                f"Missing metadata key in given mapping; {len(zarr_root_attrs.keys())} key(s): {', '.join(zarr_root_attrs.keys())}"
+            ]
+        )
         .bind(
-            lambda n_ch: sequence_accumulate_errors(
-                TypedArray.of_seq(metadata.items()).choose(lambda kv: parse_channel_meta_maybe(*kv))
+            lambda metadata: Option.of_optional(metadata.get(CHANNEL_COUNT_KEY))
+            .to_result([f"Missing the key ({CHANNEL_COUNT_KEY}) for number of channels"])
+            .map(lambda n_ch: (n_ch, metadata))
+        )
+        .bind(
+            lambda n_ch__metadata: sequence_accumulate_errors(
+                TypedArray.of_seq(snd(n_ch__metadata).items()).choose(
+                    lambda kv: parse_channel_meta_maybe(*kv)
+                )
             ).bind(
-                lambda metas: Channels.from_count_and_metas(n_ch, metas).map_error(
+                lambda metas: Channels.from_count_and_metas(fst(n_ch__metadata), metas).map_error(
                     lambda msg: [msg]
                 )
             )
@@ -185,8 +215,48 @@ def parse_channels_from_mapping(metadata: Mapping[str, object]) -> Result[Channe
     )
 
 
+def parse_channels_from_mapping_with_channels_list(
+    metadata: Mapping[str, object],
+) -> Result[Channels, list[str]]:
+    key: Literal["channels"] = "channels"
+
+    def safe_read_one(maybe_ch_meta: object) -> Result[ChannelMeta, str]:
+        match maybe_ch_meta:
+            case data if isinstance(data, Mapping):
+                try:
+                    return Result.Ok(ChannelMeta(**data))
+                except (TypeError, ValueError) as e:
+                    return Result.Error(
+                        f"Cannot parse as data as channel meta; error ({type(e).__name__}): {e}"
+                    )
+            case _:
+                return Result.Error(
+                    f"Data to parse as channel meta isn't mapping, but {type(maybe_ch_meta).__name__}"
+                )
+
+    def safe_read_multiple(maybe_channels_list: object) -> Result[list[ChannelMeta], list[str]]:
+        match maybe_channels_list:
+            case items if isinstance(items, Iterable):
+                return traverse_accumulate_errors(safe_read_one)(items)
+            case _:
+                return Result.Error(
+                    [
+                        f"Potential list of channels isn't iterable, but {type(maybe_channels_list).__name__}"
+                    ]
+                )
+
+    return (
+        Option.of_optional(metadata.get(key))
+        .to_result([f"Missing the key ({key}) for the list of channels"])
+        .bind(safe_read_multiple)
+        .map(lambda chs: Channels(count=len(chs), values=tuple(chs)))
+    )
+
+
 def parse_channels_from_zarr(
     loc: Path | ExtantFolder | ZarrLocation,
+    *,
+    parse_channels: Callable[[Mapping[str, object]], Result[Channels, list[str]]],
 ) -> Result[Channels, list[str]]:
     zarr_path: ZarrLocation
     match loc:
@@ -200,15 +270,7 @@ def parse_channels_from_zarr(
             return Result.Error(
                 [f"Cannot parse channels from value of type {type(unknown).__name__}"]
             )
-    return (
-        Option.of_optional(zarr_path.root_attrs.get("metadata"))
-        .to_result(
-            [
-                f"Missing metadata key in ZARR root attributes; {len(zarr_path.root_attrs.keys())} key(s): {', '.join(zarr_path.root_attrs.keys())}"
-            ]
-        )
-        .bind(parse_channels_from_mapping)
-    )
+    return parse_channels(zarr_path.root_attrs)
 
 
 def create_zgroup_file(*, root: Path) -> Path:
@@ -218,7 +280,20 @@ def create_zgroup_file(*, root: Path) -> Path:
     return outpath
 
 
+def extract_single_channel_single_z_data(
+    *,
+    ch: ChannelIndex,
+    img: np.ndarray,
+    dim: "CanonicalImageDimensions",
+) -> Result[np.ndarray, list[str]]:
+    z: int = floor(dim.z / 2)  # Target the central z-slice.
+    return dim.get_axes_data(img, ((ZarrAxis.C, ch), (ZarrAxis.Z, z)))
+
+
 class AxisMapping(Protocol):
+    def get_length(self, axis: ZarrAxis) -> int:
+        return getattr(self, axis.name)
+
     @property
     def rank(self) -> int:
         return len(_get_fields(self))
@@ -228,39 +303,8 @@ class AxisMapping(Protocol):
             (_ATTR_AXIS_PAIRS[attr], getattr(self, attr)) for attr in _iter_attr_names(self)
         )
 
-    @classmethod
-    def from_simple_mapping(
-        cls, m: Mapping[str, int]
-    ) -> "DimensionsForIlluminationCorrectionScaling":
-        kwargs = copy.copy(m)
-        for k in set(m.keys()) - set(_iter_attr_names(cls)):
-            try:
-                v = kwargs.pop(k)
-            except KeyError:
-                pass
-            if v != 1:
-                kwargs[k] = v
-        return cls(**kwargs)
-
-    @classmethod
-    def from_axis_map(cls, axis_map: Mapping[ZarrAxis, int]):
-        """NB: This should throw an exception if and only if one of the size values is illegal; issues with keys should be safe."""
-        kwargs: Mapping[str, int] = {}
-        errors: list[str] = []
-        keys: set[ZarrAxis] = set(axis_map.keys())
-        for attr in _iter_attr_names(cls):
-            axis = _ATTR_AXIS_PAIRS[attr]  # In this case, an implementation error was made, fatal.
-            try:
-                kwargs[attr] = axis_map[axis]
-            except KeyError:
-                errors.append(f"Missing axis: {axis}")
-            else:
-                keys.remove(axis)
-        errors.extend([f"Extra axis: {ax}" for ax in keys])
-        return Result.Error(errors) if errors else Result.Ok(cls(**kwargs))
-
     def get_axes_data(
-        self, array: zarr.Array, axis_value_pairs: Iterable[tuple[ZarrAxis, int]]
+        self, array: zarr.Array | np.ndarray, axis_value_pairs: Iterable[tuple[ZarrAxis, int]]
     ) -> Result[np.ndarray, list[str]]:
         indexer: list[int | slice] = []
         requests: Mapping[str, int] = {ax.name: value for ax, value in axis_value_pairs}
@@ -280,7 +324,7 @@ class AxisMapping(Protocol):
         return Result.Error(errors) if errors else Result.Ok(array[tuple(indexer)])
 
     def get_axis_data(
-        self, i: int, *, axis: ZarrAxis, array: zarr.Array
+        self, i: int, *, axis: ZarrAxis, array: zarr.Array | np.ndarray
     ) -> Result[np.ndarray, str]:
         if array.ndim != self.rank:
             return Result.Error(f"Array is rank {array.ndim}, but dimensions are rank {self.rank}")
@@ -295,15 +339,10 @@ class AxisMapping(Protocol):
         )
         return Result.Ok(array[indexer])
 
-    def get_channel_data(self, *, channel: Channel, array: zarr.Array) -> Result[np.ndarray, str]:
+    def get_channel_data(
+        self, *, channel: int, array: zarr.Array | np.ndarray
+    ) -> Result[np.ndarray, str]:
         return self.get_axis_data(channel, axis=ZarrAxis.C, array=array)
-
-
-@attrs.define(frozen=True, kw_only=True, eq=True)
-class DimensionsForIlluminationCorrectionScaling(AxisMapping):
-    c = attrs.field(validator=_CHECK_POSITIVE_INT)  # type: int
-    y = attrs.field(validator=_CHECK_POSITIVE_INT)  # type: int
-    x = attrs.field(validator=_CHECK_POSITIVE_INT)  # type: int
 
 
 @attrs.define(frozen=True, kw_only=True, eq=True)
@@ -317,21 +356,23 @@ class CanonicalImageDimensions(AxisMapping):
     def get_z_data(
         self, *, z_slice: int, array: zarr.Array | np.ndarray
     ) -> Result[np.ndarray, str]:
-        return self.get_axis_data(z_slice, axis=ZarrAxis.ZPLANE, array=array)
+        return self.get_axis_data(z_slice, axis=ZarrAxis.Z, array=array)
 
 
-_AM = TypeVar("_AM", CanonicalImageDimensions, DimensionsForIlluminationCorrectionScaling)
-ArrayWithDimensions: TypeAlias = tuple[zarr.Array, _AM]
+ArrayWithDimensions: TypeAlias = tuple[zarr.Array, CanonicalImageDimensions]
+
+
+def get_single_array_from_zarr_group(group: zarr.Group) -> Result[zarr.Array, str]:
+    match list(group.array_keys()):
+        case [arr_name]:
+            return Result.Ok(group.get(arr_name))
+        case names:
+            return Result.Error(f"Not a single array, but {len(names)} present in ZARR group")
 
 
 def parse_single_array_and_dimensions_from_zarr_group(
-    *, group: zarr.Group, target_type: type[_AM]
+    group: zarr.Group,
 ) -> Result[ArrayWithDimensions, str]:
-    valid_types = (CanonicalImageDimensions, DimensionsForIlluminationCorrectionScaling)
-    if not issubclass(target_type, valid_types):
-        return Result.Error(
-            f"{target_type.__name__} is not a valid target type for parsing ZARR group dimensions"
-        )
     try:
         attrs: zarr.attrs.Attributes = group.attrs
     except AttributeError:
@@ -344,9 +385,8 @@ def parse_single_array_and_dimensions_from_zarr_group(
         axis_names: list[str] = [ax["name"] for ax in axes]
     except KeyError as e:
         return Result.Error(f"Cannot access axis name for each element of axes; error: {e}")
-    match list(group.array_keys()):
-        case [array_name]:
-            arr: zarr.Array = group.get(array_name)
+    match get_single_array_from_zarr_group(group):
+        case result.Result(tag="ok", ok=arr):
             dims: list[int] = list(arr.shape)
             if len(dims) != len(axis_names):
                 return Result.Error(
@@ -354,15 +394,15 @@ def parse_single_array_and_dimensions_from_zarr_group(
                 )
             try:
                 return Result.Ok(
-                    (arr, target_type.from_simple_mapping(dict(zip(axis_names, dims, strict=True))))
+                    (arr, CanonicalImageDimensions(**dict(zip(axis_names, dims, strict=True))))
                 )
             except TypeError as e:
-                return Result.Error(f"Could not build target type ({target_type}): {e}")
-        case array_names:
-            return Result.Error(f"Not a single array, but {len(array_names)} present in ZARR group")
+                return Result.Error(f"Could not build image dimensions: {e}")
+        case res:
+            return res
 
 
-def _get_fields(axis_map: _AM | type[_AM]) -> Iterable[attrs.Attribute]:
+def _get_fields(axis_map: CanonicalImageDimensions) -> Iterable[attrs.Attribute]:
     return attrs.fields(axis_map if isinstance(axis_map, type) else axis_map.__class__)
 
 
@@ -376,8 +416,10 @@ def compute_corrected_channels(
     *,
     image: zarr.Array,
     image_dimensions: CanonicalImageDimensions,
+    image_channels: Channels,
     weights: zarr.Array,
-    weight_dimensions: DimensionsForIlluminationCorrectionScaling,
+    weights_dimensions: CanonicalImageDimensions,
+    weights_channels: Channels,
 ) -> Result[list[np.ndarray], list[str]]:
     errors: list[str] = []
     by_ch: list[Result[np.ndarray, list[str]]] = []
@@ -385,19 +427,20 @@ def compute_corrected_channels(
         errors.append(
             f"Image is of rank {image.ndim}, but dimensions are of rank {image_dimensions.rank}"
         )
-    if weights.ndim != weight_dimensions.rank:
+    if weights.ndim != weights_dimensions.rank:
         errors.append(
-            f"Weights are of rank {weights.ndim}, but dimensions are of rank {weight_dimensions.rank}"
+            f"Weights are of rank {weights.ndim}, but dimensions are of rank {weights_dimensions.rank}"
         )
     if errors:
         return Result.Error(errors)
-    match _iterate_channels(dim_img=image_dimensions, dim_wts=weight_dimensions):
+    # TODO: implement in terms of image_channels and weights_channels.
+    match _iterate_channels(dim_img=image_dimensions, dim_wts=weights_dimensions):
         case result.Result(tag="ok", ok=channels):
             for ch_img, ch_wts in channels:
                 match sequence_accumulate_errors(
                     (
                         image_dimensions.get_channel_data(channel=ch_img, array=image),
-                        weight_dimensions.get_channel_data(channel=ch_wts, array=weights),
+                        weights_dimensions.get_channel_data(channel=ch_wts, array=weights),
                     )
                 ):
                     case result.Result(tag="ok", ok=(img, wts)):
@@ -413,15 +456,3 @@ def compute_corrected_channels(
         case result.Result(tag="error", error=err):
             return Result.Error([err])
     return Result.Error(errors) if errors else Result.Ok(by_ch)
-
-
-def _iterate_channels(
-    *,
-    dim_img: CanonicalImageDimensions,
-    dim_wts: DimensionsForIlluminationCorrectionScaling,
-) -> Result[Iterable[Channel], str]:
-    if dim_img.c == dim_wts.c:
-        return Result.Ok(zip(range(dim_img.c), range(dim_wts.c), strict=False))
-    return Result.Error(
-        f"Image's dimensions indicate {dim_img.c} channel(s) while weights' dimensions indicate {dim_wts.c} channel(s)"
-    )

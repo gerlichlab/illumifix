@@ -26,6 +26,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
+attrs = "*"
 expression = "^5.0.2"
 gertils = { git = "https://github.com/gerlichlab/gertils.git", tag = "v0.6.0" }
 numpy = "*"
@@ -37,13 +38,6 @@ optional = true
 
 [tool.poetry.group.coverage.dependencies]
 coverage = ">=7.5.0"
-
-[tool.poetry.group.dev]
-optional = true
-
-[tool.poetry.group.dev.dependencies]
-hypothesis = ">=6.92.1"
-pytest = "^7.2.0"
 
 [tool.poetry.group.formatting]
 optional = true
@@ -60,9 +54,17 @@ mypy = ">=1.0.1"
 pandas-stubs = "*"
 ruff = "==0.7.4"  # https://github.com/astral-sh/ruff/issues/14681
 
+[tool.poetry.group.pipeline]
+optional = true
+
+[tool.poetry.group.pipeline.dependencies]
+matplotlib = "*"
+piper = ">=0.14.2"
+scikit-image = ">=0.25"
+
 [tool.poetry.group.testsuite.dependencies]
 hypothesis = ">=6.92.1"
-pytest = ">=7.1.0"
+pytest = ">=7.2.0"
 typer = "*"
 
 [tool.codespell]

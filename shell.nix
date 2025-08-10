@@ -4,9 +4,14 @@
     ref = "refs/tags/25.05";
   }) {}, 
   dev ? true,
+  pipeline ? true,
 }:
 let py311 = pkgs.python311.withPackages (ps: with ps; [ numpy ]);
-    poetryExtras = if dev then [ "coverage" "formatting" "linting" "testsuite" ] else [ ];
+    poetryExtras = (
+      [ ] ++ 
+      (if dev then [ "coverage" "formatting" "linting" "pipeline" "testsuite" ] else [ ]) ++
+      (if pipeline then [ "pipeline" ] else [ ])
+    );
     poetryInstallExtras = (
       if poetryExtras == [] then ""
       else pkgs.lib.concatStrings [ " --with " (pkgs.lib.concatStringsSep "," poetryExtras) ]

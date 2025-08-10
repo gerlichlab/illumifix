@@ -13,7 +13,6 @@ from expression import Result, result
 from illumifix.expression_utilities import sequence_accumulate_errors
 from illumifix.zarr_tools import (
     CanonicalImageDimensions,
-    DimensionsForIlluminationCorrectionScaling,
     compute_corrected_channels,
     parse_single_array_and_dimensions_from_zarr_group,
 )
@@ -46,17 +45,17 @@ def workflow(*, image_path: Path, weights_path: Path, output_path: Path) -> None
             target_type=CanonicalImageDimensions,
         ).map_error(lambda msg: f"{msg} (parsing image)")
     )
-    weights_parse: Result[tuple[zarr.Array, DimensionsForIlluminationCorrectionScaling], str] = (
+    weights_parse: Result[tuple[zarr.Array, CanonicalImageDimensions], str] = (
         parse_single_array_and_dimensions_from_zarr_group(
             group=weights_group,
-            target_type=DimensionsForIlluminationCorrectionScaling,
+            target_type=CanonicalImageDimensions,
         ).map_error(lambda msg: f"{msg} (parsing weights)")
     )
     match sequence_accumulate_errors((image_parse, weights_parse)):
         case result.Result(tag="ok", ok=[(img, img_dim), (wts, wts_dim)]):
             logging.info("Computing illumination correction")
             match compute_corrected_channels(
-                image=img, image_dimensions=img_dim, weights=wts, weight_dimensions=wts_dim
+                image=img, image_dimensions=img_dim, weights=wts, weights_dimensions=wts_dim
             ):
                 case result.Result(tag="ok", ok=img_by_channel):
                     logging.debug("Stacking channels and swapping axes...")
