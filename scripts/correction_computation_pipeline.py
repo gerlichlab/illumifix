@@ -1,0 +1,126 @@
+"""Simple pipeline for computation and visualization of the illumination correction"""
+
+import argparse
+import logging
+from pathlib import Path
+import sys
+from typing import Any, Iterable
+
+from gertils import ExtantFile, ExtantFolder, NonExtantPath
+import pypiper
+
+from compute_illumination_correction import workflow as compute_correction
+from visualize_scalings import workflow as visualize_correction
+
+
+NO_TEE_LOGS_OPTNAME = "--do-not-tee-logs"
+PIPE_NAME = "illumination_correction_computation"
+ZARR_NAME = "illumination_correction_scalings.zarr"
+
+
+class CorrectionComputationPipeline(pypiper.Pipeline):
+    """Pipeline to compute and visualize illumination correction weights/scalings"""
+    def __init__(
+        self,
+        *,
+        path_list_file: ExtantFile, 
+        output_root: ExtantFolder,
+        version_name: str,
+        pypiper_folder: ExtantFolder,
+        **pl_mgr_kwargs: Any,
+    ) -> None:
+        self.version_name = version_name
+        self.weights_root = NonExtantPath(output_root / ZARR_NAME)
+        self.visualization_folder = output_root / "visualization"
+        with path_list_file.path.open(mode="r") as pathlist:
+            self.input_paths: list[Path] = [Path(line.strip()) for line in pathlist.readlines() if line.strip()]
+        super().__init__(name=PIPE_NAME, outfolder=str(pypiper_folder.path), **pl_mgr_kwargs)
+
+    def stages(self) -> list[pypiper.Stage]:
+        return [
+            pypiper.Stage(
+                name="computation", 
+                func=compute_correction,
+                f_kwargs={
+                    "base_paths": self.input_paths, 
+                    "output_path": self.weights_root,
+                    "version_name": self.version_name,
+                    "overwrite": True,
+                },
+            ),
+            pypiper.Stage(
+                name="visualization", 
+                func=visualize_correction,
+                f_kwargs={
+                    "zarr_root": self.weights_root.path, 
+                    "output_folder": self.visualization_folder,
+                    "overwrite": True,
+                },
+            )
+        ]
+
+
+def parse_cli(args: Iterable[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="A pipeline to compute and visualize correction for uneven illumination across fields of view",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--path-list-file",
+        required=True,
+        type=ExtantFile.from_string,
+        help="Path to file listing the paths in which to find images",
+    )
+    parser.add_argument(
+        "--output-root", 
+        required=True,
+        type=Path, 
+        help="Path to folder in which to place main outputs",
+    )
+    parser.add_argument(
+        "--version-name",
+        required=True,
+        help="Name for the version of the weights/scalings to be produced by this run of the program",
+    )
+    parser.add_argument(
+        "--pypiper-folder", 
+        type=ExtantFolder.from_string, 
+        required=True, 
+        help="Path to folder for pypiper output",
+    )
+    parser.add_argument(
+        NO_TEE_LOGS_OPTNAME, 
+        action="store_true", 
+        help="Do not tee logging output from pypiper manager",
+    )
+    parser = pypiper.add_pypiper_args(
+        parser,
+        groups=("pypiper", "checkpoint"),
+        args=("start-point", ),
+        )
+    return parser.parse_args(args)
+
+
+def init(opts: argparse.Namespace) -> CorrectionComputationPipeline:
+    kwargs = {
+        "output_root": opts.output_root,
+        "pypiper_folder": opts.pypiper_folder,
+    }
+    if opts.do_not_tee_logs:
+        kwargs["multi"] = True
+    logging.info(f"Building {PIPE_NAME} pipeline, using data listed in from {opts.path_list_file.path}")
+    return CorrectionComputationPipeline(**kwargs)
+
+
+def main(cmdl):
+    opts = parse_cli(cmdl)
+    logging.basicConfig(level=logging.INFO, force=True)
+    logging.info("Building pipeline")
+    pipeline = init(opts)
+    logging.info("Running pipeline")
+    pipeline.run(start_point=opts.start_point, stop_after=opts.stop_after)
+    pipeline.wrapup()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

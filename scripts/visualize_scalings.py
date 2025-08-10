@@ -147,7 +147,7 @@ def workflow(*, zarr_root: Path, output_folder: Path, overwrite: bool = False) -
                         )
                         logging.info("Saving heatmap: %s", heatmap_file)
                         plt.savefig(heatmap_file)
-                        plt.clf() # Clear the figure.
+                        plt.clf()  # Clear the figure.
                         # TODO: plot title, axes, with at least channel information and perhaps original image size.
                         # TODO: consider also storing and visualizing statistics about the weights/scalings.
                     logging.info("Done!")
