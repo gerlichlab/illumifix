@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import sys
-from pathlib import Path
+from pathlib import Path 
 from typing import Callable, Iterable, Mapping, TypeAlias
 
 import attrs
@@ -23,11 +23,10 @@ from illumifix.expression_utilities import sequence_accumulate_errors, traverse_
 from illumifix.zarr_tools import (
     CanonicalImageDimensions,
     ChannelIndex,
+    ChannelKey,
     ChannelMeta,
-    ChannelName,
     Channels,
     JsonEncoderForChannelMeta,
-    WaveLenOpt,
     ZarrAxis,
     extract_single_channel_single_z_data,
     parse_channels_from_flattened_mapping_with_count,
@@ -183,34 +182,6 @@ def expand_target_folder(folder: ExtantFolder) -> Result[list[ExtantFolder], Pat
     return Result.Ok(goods)
 
 
-def determine_channel_order(
-    *, new_channels: Channels, ref_channels: Channels
-) -> Result[list[int], str]:
-    if new_channels == ref_channels:
-        # Ideal (frequent) case --> short-circuit
-        return Result.Ok(list(range(new_channels.count)))
-    if new_channels.count != ref_channels.count:
-        return Result.Error(
-            f"New channels' count is {new_channels.count}, but reference count is {ref_channels.count}"
-        )
-    ChannelKey: TypeAlias = tuple[ChannelName, WaveLenOpt, WaveLenOpt]
-    get_ch_key: Callable[[ChannelMeta], ChannelKey] = lambda ch: (
-        ch.name,
-        ch.emissionLambdaNm,
-        ch.excitationLambdaNm,
-    )
-    lookup: Mapping[ChannelKey, int] = {
-        (ch.name, ch.emissionLambdaNm, ch.excitationLambdaNm): i
-        for i, ch in enumerate(ref_channels.values)
-    }
-    get_ch_index: Callable[[ChannelMeta], Result[ChannelIndex, ChannelMeta]] = (
-        lambda ch: Option.of_optional(lookup.get(get_ch_key(ch))).to_result(ch)
-    )
-    return traverse_accumulate_errors(get_ch_index)(new_channels.values).map_error(
-        lambda bad_chs: f"{len(bad_chs)} channel(s) cannot be resolved: {bad_chs}"
-    )
-
-
 def get_sorted_channels_representation(channels: Channels) -> Channels:
     """Order the metadata instances within the wrapper class."""
     ordered: list[ChannelMeta] = sorted(
@@ -224,6 +195,26 @@ def get_sorted_channels_representation(channels: Channels) -> Channels:
     return Channels(
         count=channels.count,
         values=tuple(attrs.evolve(ch, index=i) for i, ch in enumerate(ordered)),
+    )
+
+
+def determine_channel_order(
+    *, new_channels: Channels, ref_channels: Channels
+) -> Result[list[int], str]:
+    if new_channels == ref_channels:
+        # Ideal (frequent) case --> short-circuit
+        return Result.Ok(list(range(new_channels.count)))
+    if new_channels.count != ref_channels.count:
+        return Result.Error(
+            f"New channels' count is {new_channels.count}, but reference count is {ref_channels.count}"
+        )
+    
+    lookup: Mapping[ChannelKey, int] = {ch.get_lookup_key(): i for i, ch in enumerate(ref_channels.values)}
+    get_ch_index: Callable[[ChannelMeta], Result[ChannelIndex, ChannelMeta]] = (
+        lambda ch: Option.of_optional(lookup.get(ch.get_lookup_key())).to_result(ch)
+    )
+    return traverse_accumulate_errors(get_ch_index)(new_channels.values).map_error(
+        lambda bad_chs: f"{len(bad_chs)} channel(s) cannot be resolved: {bad_chs}"
     )
 
 

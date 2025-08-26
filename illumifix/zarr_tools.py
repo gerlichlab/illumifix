@@ -24,7 +24,9 @@ from illumifix.expression_utilities import sequence_accumulate_errors, traverse_
 
 CHANNEL_COUNT_KEY: Literal["channelCount"] = "channelCount"
 
+ArrayLike: TypeAlias = np.ndarray | zarr.Array
 ChannelIndex: TypeAlias = int
+ChannelKey: TypeAlias = tuple["ChannelName", "WaveLenOpt", "WaveLenOpt"]
 ChannelName: TypeAlias = str
 Wavelength: TypeAlias = float
 WaveLenOpt: TypeAlias = Optional[Wavelength]
@@ -42,11 +44,11 @@ class ZarrAxis(Enum):
     Z = _ZarrAxis("z", "space")
     Y = _ZarrAxis("y", "space")
     X = _ZarrAxis("x", "space")
-
+    
     @property
     def name(self) -> str:
         return self.value.name
-
+    
     @property
     def typename(self) -> str:
         return self.value.typename
@@ -81,6 +83,9 @@ class ChannelMeta:
     index = attrs.field(validator=[attrs.validators.instance_of(int), attrs.validators.ge(0)])  # type: ChannelIndex
     emissionLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: WaveLenOpt
     excitationLambdaNm = attrs.field(validator=_check_null_or_positive_float)  # type: WaveLenOpt
+
+    def get_lookup_key(self) -> ChannelKey:
+        return self.name, self.emissionLambdaNm, self.excitationLambdaNm
 
 
 def _all_are_channels(_: "Channels", attr: attrs.Attribute, values: tuple[object]) -> None:
@@ -274,6 +279,7 @@ def parse_channels_from_zarr(
 
 
 def create_zgroup_file(*, root: Path) -> Path:
+    """Create the minimal content for the ZARR group file (format), in the correct place."""
     outpath = root / ".zgroup"
     with outpath.open(mode="x") as outfile:
         json.dump({"zarr_format": 2}, outfile, indent=4)
@@ -304,7 +310,7 @@ class AxisMapping(Protocol):
         )
 
     def get_axes_data(
-        self, array: zarr.Array | np.ndarray, axis_value_pairs: Iterable[tuple[ZarrAxis, int]]
+        self, array: ArrayLike, axis_value_pairs: Iterable[tuple[ZarrAxis, int]]
     ) -> Result[np.ndarray, list[str]]:
         indexer: list[int | slice] = []
         requests: Mapping[str, int] = {ax.name: value for ax, value in axis_value_pairs}
@@ -324,7 +330,7 @@ class AxisMapping(Protocol):
         return Result.Error(errors) if errors else Result.Ok(array[tuple(indexer)])
 
     def get_axis_data(
-        self, i: int, *, axis: ZarrAxis, array: zarr.Array | np.ndarray
+        self, i: int, *, axis: ZarrAxis, array: ArrayLike
     ) -> Result[np.ndarray, str]:
         if array.ndim != self.rank:
             return Result.Error(f"Array is rank {array.ndim}, but dimensions are rank {self.rank}")
@@ -340,7 +346,7 @@ class AxisMapping(Protocol):
         return Result.Ok(array[indexer])
 
     def get_channel_data(
-        self, *, channel: int, array: zarr.Array | np.ndarray
+        self, *, channel: int, array: ArrayLike
     ) -> Result[np.ndarray, str]:
         return self.get_axis_data(channel, axis=ZarrAxis.C, array=array)
 
@@ -354,7 +360,7 @@ class CanonicalImageDimensions(AxisMapping):
     x = attrs.field(validator=_CHECK_POSITIVE_INT)  # type: int
 
     def get_z_data(
-        self, *, z_slice: int, array: zarr.Array | np.ndarray
+        self, *, z_slice: int, array: ArrayLike
     ) -> Result[np.ndarray, str]:
         return self.get_axis_data(z_slice, axis=ZarrAxis.Z, array=array)
 
@@ -397,7 +403,7 @@ def parse_single_array_and_dimensions_from_zarr_group(
                     (arr, CanonicalImageDimensions(**dict(zip(axis_names, dims, strict=True))))
                 )
             except TypeError as e:
-                return Result.Error(f"Could not build image dimensions: {e}")
+                return Result.Error(f"Could not build image dimensions; error ({type(e).__name__}): {e}")
         case res:
             return res
 
@@ -422,7 +428,6 @@ def compute_corrected_channels(
     weights_channels: Channels,
 ) -> Result[list[np.ndarray], list[str]]:
     errors: list[str] = []
-    by_ch: list[Result[np.ndarray, list[str]]] = []
     if image.ndim != image_dimensions.rank:
         errors.append(
             f"Image is of rank {image.ndim}, but dimensions are of rank {image_dimensions.rank}"
@@ -431,16 +436,29 @@ def compute_corrected_channels(
         errors.append(
             f"Weights are of rank {weights.ndim}, but dimensions are of rank {weights_dimensions.rank}"
         )
+    if image_channels.count != image_dimensions.c:
+        errors.append(f"Image channels count is {image_channels.count} but dimensions allege {image_dimensions.c}")
+    if weights_channels.count != weights_dimensions.c:
+        errors.append(f"Weights channels count is {weights_channels.count} but dimensions allege {weights_dimensions.c}")
     if errors:
         return Result.Error(errors)
-    # TODO: implement in terms of image_channels and weights_channels.
-    match _iterate_channels(dim_img=image_dimensions, dim_wts=weights_dimensions):
-        case result.Result(tag="ok", ok=channels):
-            for ch_img, ch_wts in channels:
+
+    channel_indices_in_weights: dict[tuple[ChannelName, WaveLenOpt, WaveLenOpt], int] = {
+        ch.get_lookup_key(): i 
+        for i, ch in enumerate(weights_channels.values)
+    }
+    def index_channel_in_weights(ch: ChannelMeta) -> Result[int, str]:
+        return Option.of_optional(channel_indices_in_weights.get(ch.get_lookup_key())).to_result(f"Channel not defined in weights: {ch}")
+
+    match traverse_accumulate_errors(lambda t: index_channel_in_weights(snd(t)).map(lambda i: (fst(t), i)))(enumerate(image_channels.values)):
+        case result.Result(tag="ok", ok=index_pairs):
+            errors: list[str] = []
+            by_ch: list[Result[np.ndarray, list[str]]] = []
+            for ch_img_index, ch_wts_index in index_pairs:
                 match sequence_accumulate_errors(
                     (
-                        image_dimensions.get_channel_data(channel=ch_img, array=image),
-                        weights_dimensions.get_channel_data(channel=ch_wts, array=weights),
+                        image_dimensions.get_channel_data(channel=ch_img_index, array=image),
+                        weights_dimensions.get_channel_data(channel=ch_wts_index, array=weights),
                     )
                 ):
                     case result.Result(tag="ok", ok=(img, wts)):
@@ -451,8 +469,10 @@ def compute_corrected_channels(
                         )
                     case result.Result(tag="error", error=messages):
                         errors.append(
-                            f"For image channel {ch_img} and weights channel {ch_wts}, {len(errors)} error(s) extracting data: {', '.join(messages)}"
+                            f"For image channel {ch_img_index} and weights channel {ch_wts_index}, {len(errors)} error(s) extracting data: {', '.join(messages)}"
                         )
-        case result.Result(tag="error", error=err):
-            return Result.Error([err])
-    return Result.Error(errors) if errors else Result.Ok(by_ch)
+            return Result.Error(errors) if errors else Result.Ok(by_ch)
+        case result.Result(tag="error", error=messages):
+            return Result.Error(messages)
+        case unknown:
+            raise TypeError(f"Expected an expression.Result-wrapped value but got a {type(unknown).__name__}")
