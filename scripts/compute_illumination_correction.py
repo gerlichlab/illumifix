@@ -16,7 +16,7 @@ import numpy as np
 import zarr  # type: ignore[import-untyped]
 from expression import Option, Result, fst, result, snd
 from expression.collections import TypedArray
-from gertils.pathtools import ExtantFile, ExtantFolder, NonExtantPath, PathWrapperException
+from gertils.pathtools import ExtantFile, ExtantFolder, PathWrapperException
 from ome_zarr.axes import Axes  # type: ignore[import-untyped]
 
 from illumifix import PROJECT_NAME, ZARR_FORMAT
@@ -54,7 +54,7 @@ def _parse_cmdl(cmdl: list[str]) -> argparse.Namespace:
         "-O",
         "--output-path",
         required=True,
-        type=NonExtantPath.from_string,
+        type=Path,
         help="Path to which to write output",
     )
     parser.add_argument(
@@ -346,10 +346,12 @@ def average_all_data_per_channel(
 def workflow(
     *,
     base_paths: Iterable[Path],
-    output_path: NonExtantPath,
+    output_path: Path,
     version_name: str,
     overwrite: bool = False,
 ) -> None:
+    if not overwrite and output_path.exists():
+        raise FileExistsError(f"Output path already exists: {output_path}")
     match (
         traverse_accumulate_errors(build_target_path)(base_paths)
         .bind(traverse_accumulate_errors(expand_target_folder))
@@ -380,16 +382,15 @@ def workflow(
             raise Exception(f"{len(path_message_pairs)} problem(s): {path_message_pairs}")
         case result.Result(tag="ok", ok=(channels, weights, paths)):
             weights: np.ndarray = reshape_as_necessary(weights)  # type: ignore[no-redef]
-            outroot: Path = output_path.path
-            logging.info("Creating ZARR root: %s", outroot)
-            root = zarr.group(store=zarr.DirectoryStore(path=outroot), overwrite=overwrite)
+            logging.info("Creating ZARR root: %s", output_path)
+            root = zarr.group(store=zarr.DirectoryStore(path=output_path), overwrite=overwrite)
             logging.info("Creating array")
             arr = root.create_dataset(
                 name="0", shape=weights.shape, dtype=weights.dtype, data=weights
             )
             logging.info("Writing data")
             arr[:] = weights
-            zarr_metadata_file: Path = outroot / ".zattrs"
+            zarr_metadata_file: Path = output_path / ".zattrs"
             logging.info("Writing metadata: %s", zarr_metadata_file)
             with zarr_metadata_file.open(mode="w") as meta_file:
                 json.dump(
