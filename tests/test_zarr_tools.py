@@ -2,40 +2,40 @@
 
 import copy
 import functools
-import random
-from collections.abc import Callable, Iterable, Mapping
-from functools import partial
 import json
+import random
+from collections.abc import Callable, Collection, Iterable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Optional, TypeVar
 
 import attrs
 import numpy as np
 import pytest
-import zarr
+import zarr  # type: ignore[import-untyped]
 from expression import Result, fst, result, snd
 from gertils import ExtantFolder
 from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hyp_npy
 from hypothesis.strategies import SearchStrategy
-from ome_zarr.axes import KNOWN_AXES as OME_AXIS_TYPES
-from ome_zarr.io import ZarrLocation
+from ome_zarr.axes import KNOWN_AXES as OME_AXIS_TYPES  # type: ignore[import-untyped]
+from ome_zarr.io import ZarrLocation  # type: ignore[import-untyped]
 
 from illumifix.zarr_tools import (
     CHANNEL_COUNT_KEY,
     ArrayWithDimensions,
     CanonicalImageDimensions,
-    ChannelKey, 
+    ChannelKey,
     ChannelMeta,
     Channels,
+    OmeZarrAxis,
     WaveLenOpt,
-    ZarrAxis,
     compute_corrected_channels,
     create_zgroup_file,
-    parse_single_array_and_dimensions_from_zarr_group,
     parse_channels_from_flattened_mapping_with_count,
     parse_channels_from_zarr,
+    parse_single_array_and_dimensions_from_zarr_group,
 )
 
 DEFAULT_DATA_NAME = "test_zarr_data"
@@ -113,7 +113,7 @@ SPACE_AXES = [_create_space_axis_map(ax) for ax in ["z", "y", "x"]]
 
 
 @pytest.fixture
-def zarr_path(tmp_path) -> Path:
+def zarr_path(tmp_path: Path) -> Path:
     return tmp_path / "test.zarr"
 
 
@@ -130,21 +130,21 @@ def zarr_group(zarr_path) -> zarr.Group:
     )
 
 
-def _wrap_parse_error_message(msg: str) -> Result[ArrayWithDimensions, list[str]]:
+def _wrap_parse_error_message(msg: str) -> Result[ArrayWithDimensions, str]:
     return Result.Error(msg)
 
 
 def test_zarr_axis__has_length_five():
-    assert len(ZarrAxis) == 5
+    assert len(OmeZarrAxis) == 5  # noqa: PLR2004
 
 
-@pytest.mark.parametrize("axis", ZarrAxis)
-def test_zarr_axis__name_is_lowercase(axis: ZarrAxis):
+@pytest.mark.parametrize("axis", OmeZarrAxis)
+def test_zarr_axis__name_is_lowercase(axis: OmeZarrAxis):
     assert axis.name == axis.name.lower()
 
 
-@pytest.mark.parametrize("axis", ZarrAxis)
-def test_zarr_axis__typename_corresponds_to_ome_zarr(axis: ZarrAxis):
+@pytest.mark.parametrize("axis", OmeZarrAxis)
+def test_zarr_axis__typename_corresponds_to_ome_zarr(axis: OmeZarrAxis):
     assert axis.typename == OME_AXIS_TYPES[axis.name]
 
 
@@ -304,7 +304,9 @@ def gen_small_image_and_dimensions() -> SearchStrategy[tuple[np.ndarray, Canonic
     return gen_image_dimensions().flatmap(lambda dim: gen_image(dim).map(lambda img: (img, dim)))
 
 
-def gen_small_weights_and_dimensions() -> SearchStrategy[tuple[np.ndarray, CanonicalImageDimensions]]:
+def gen_small_weights_and_dimensions() -> (
+    SearchStrategy[tuple[np.ndarray, CanonicalImageDimensions]]
+):
     return gen_weights_dimensions().flatmap(
         lambda dim: gen_weights(dim).map(lambda wts: (wts, dim))
     )
@@ -320,30 +322,37 @@ def gen_reasonable_weights(shape, **kwargs) -> SearchStrategy[np.ndarray]:
         "allow_infinity": False,  # Prevent odd behavior when equality and proximity testing.
     }
     params.update(kwargs)
-    return hyp_npy.arrays(shape=shape, dtype=WEIGHTS_DATA_TYPE, elements=st.floats(**params))
+    return hyp_npy.arrays(shape=shape, dtype=WEIGHTS_DATA_TYPE, elements=st.floats(**params))  # type: ignore[arg-type]
 
 
-def _build_channels(chs: Iterable[ChannelMeta]) -> Channels:
-    return Channels(count=len(chs), values=tuple(attrs.evolve(c, index=i) for i, c in enumerate(chs)))
+def _build_channels(chs: Collection[ChannelMeta]) -> Channels:
+    return Channels(
+        count=len(chs), values=tuple(attrs.evolve(c, index=i) for i, c in enumerate(chs))
+    )
 
 
 def gen_fixed_length_channels(size: int) -> SearchStrategy[list[ChannelMeta]]:
     names: SearchStrategy[list[str]] = st.sets(st.text(), min_size=size, max_size=size).map(list)
-    emissions: SearchStrategy[list[WaveLenOpt]] = st.lists(gen_wavelength, min_size=size, max_size=size)
-    excitations: SearchStrategy[list[WaveLenOpt]] = st.lists(gen_wavelength, min_size=size, max_size=size)
-    return st.tuples(names, emissions, excitations)\
-        .map(
-            lambda t: [
-                ChannelMeta(name=name, index=i, emissionLambdaNm=emit, excitationLambdaNm=excite) 
-                for i, (name, emit, excite) in enumerate(zip(t[0], t[1], t[2], strict=True))
-            ]
-        )
+    emissions: SearchStrategy[list[WaveLenOpt]] = st.lists(
+        gen_wavelength, min_size=size, max_size=size
+    )
+    excitations: SearchStrategy[list[WaveLenOpt]] = st.lists(
+        gen_wavelength, min_size=size, max_size=size
+    )
+    return st.tuples(names, emissions, excitations).map(
+        lambda t: [
+            ChannelMeta(name=name, index=i, emissionLambdaNm=emit, excitationLambdaNm=excite)
+            for i, (name, emit, excite) in enumerate(zip(t[0], t[1], t[2], strict=True))
+        ]
+    )
 
 
 @st.composite
 def gen_legal_channel_correction_inputs(
     draw,
-) -> tuple[np.ndarray, CanonicalImageDimensions, Channels, np.ndarray, CanonicalImageDimensions, Channels]:
+) -> tuple[
+    np.ndarray, CanonicalImageDimensions, Channels, np.ndarray, CanonicalImageDimensions, Channels
+]:
     img: np.ndarray
     dim_img: CanonicalImageDimensions
     img, dim_img = draw(gen_small_image_and_dimensions())
@@ -356,7 +365,9 @@ def gen_legal_channel_correction_inputs(
         x=dim_img.x,
     )
     chs_wts: list[ChannelMeta] = draw(gen_fixed_length_channels(weights_ch_count))
-    raw_chs_img: set[ChannelMeta] = draw(st.sets(st.sampled_from(chs_wts), min_size=dim_img.c, max_size=dim_img.c))
+    raw_chs_img: set[ChannelMeta] = draw(
+        st.sets(st.sampled_from(chs_wts), min_size=dim_img.c, max_size=dim_img.c)
+    )
     wts: np.ndarray = draw(gen_reasonable_weights((1, dim_wts.c, 1, dim_wts.y, dim_wts.x)))
     return img, dim_img, _build_channels(raw_chs_img), wts, dim_wts, _build_channels(chs_wts)
 
@@ -390,7 +401,12 @@ def test_compute_corrected_channels__gives_back_a_list_of_length_equal_to_number
 ):
     img, dim_img, chs_img, wts, dim_wts, chs_wts = inputs
     match compute_corrected_channels(
-        image=img, image_dimensions=dim_img, image_channels=chs_img, weights=wts, weights_dimensions=dim_wts, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=dim_img,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=dim_wts,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="ok", ok=array_per_channel):
             assert len(array_per_channel) == dim_img.c
@@ -406,7 +422,12 @@ def test_compute_corrected_channels__gives_back_a_list_in_which_each_element_has
 ):
     img, dim_img, chs_img, wts, dim_wts, chs_wts = inputs
     match compute_corrected_channels(
-        image=img, image_dimensions=dim_img, image_channels=chs_img, weights=wts, weights_dimensions=dim_wts, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=dim_img,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=dim_wts,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="ok", ok=array_per_channel):
             # The full time series of voxels should be extracted for each channel, and voxel size must remain the
@@ -435,9 +456,16 @@ def test_compute_corrected_channels__gives_the_correct_answer_when_given_legal_i
     img, dim_img, chs_img, wts, dim_wts, chs_wts = inputs
     max_val: int = np.iinfo(IMAGE_DATA_TYPE).max
     get_exp_elm: Callable[[float], int] = lambda x: min(round(x), max_val)
-    weights_channels_indices: dict[ChannelKey, int] = {ch.get_lookup_key(): i for i, ch in enumerate(chs_wts.values)}
+    weights_channels_indices: dict[ChannelKey, int] = {
+        ch.get_lookup_key(): i for i, ch in enumerate(chs_wts.values)
+    }
     match compute_corrected_channels(
-        image=img, image_dimensions=dim_img, image_channels=chs_img, weights=wts, weights_dimensions=dim_wts, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=dim_img,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=dim_wts,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="ok", ok=array_per_channel):
             assert len(array_per_channel) == chs_img.count
@@ -458,19 +486,27 @@ def test_compute_corrected_channels__gives_the_correct_answer_when_given_legal_i
 _A = TypeVar("_A")
 
 
-def _gen_channels_from_tuple_with_dimensions(pair: tuple[_A, CanonicalImageDimensions]) -> SearchStrategy[tuple[_A, CanonicalImageDimensions, Channels]]:
+def _gen_channels_from_tuple_with_dimensions(
+    pair: tuple[_A, CanonicalImageDimensions],
+) -> SearchStrategy[tuple[_A, CanonicalImageDimensions, Channels]]:
     return gen_fixed_length_channels(snd(pair).c).map(lambda chs: (*pair, _build_channels(chs)))
 
 
 @given(
-    wts_and_dim_and_chs=gen_small_weights_and_dimensions().flatmap(_gen_channels_from_tuple_with_dimensions),
-    img_and_dim_and_chs=gen_image_dimensions().flatmap(
+    wts_and_dim_and_chs=gen_small_weights_and_dimensions().flatmap(
+        _gen_channels_from_tuple_with_dimensions
+    ),
+    img_and_dim_and_chs=gen_image_dimensions()
+    .flatmap(
         lambda dim: gen_random_rank_array(data_type=IMAGE_DATA_TYPE)
         .filter(lambda img: img.ndim != dim.rank)
         .map(lambda img: (img, dim))
-    ).flatmap(_gen_channels_from_tuple_with_dimensions),
+    )
+    .flatmap(_gen_channels_from_tuple_with_dimensions),
 )
-def test_compute_corrected_channels__requires_correct_image_rank(img_and_dim_and_chs, wts_and_dim_and_chs):
+def test_compute_corrected_channels__requires_correct_image_rank(
+    img_and_dim_and_chs, wts_and_dim_and_chs
+):
     img: np.ndarray
     img_dim: CanonicalImageDimensions
     chs_img: Channels
@@ -480,10 +516,18 @@ def test_compute_corrected_channels__requires_correct_image_rank(img_and_dim_and
     chs_wts: Channels
     wts, wts_dim, chs_wts = wts_and_dim_and_chs
     match compute_corrected_channels(
-        image=img, image_dimensions=img_dim, image_channels=chs_img, weights=wts, weights_dimensions=wts_dim, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=img_dim,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=wts_dim,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="error", error=messages):
-            assert f"Image is of rank {img.ndim}, but dimensions are of rank {img_dim.rank}" in messages
+            assert (
+                f"Image is of rank {img.ndim}, but dimensions are of rank {img_dim.rank}"
+                in messages
+            )
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected a Result.Error but got a Result.Ok")
         case unknown:
@@ -491,14 +535,20 @@ def test_compute_corrected_channels__requires_correct_image_rank(img_and_dim_and
 
 
 @given(
-    wts_and_dim_and_chs=gen_weights_dimensions().flatmap(
+    wts_and_dim_and_chs=gen_weights_dimensions()
+    .flatmap(
         lambda dim: gen_random_rank_array(data_type=WEIGHTS_DATA_TYPE)
         .filter(lambda wts: wts.ndim != dim.rank)
         .map(lambda wts: (wts, dim))
-    ).flatmap(_gen_channels_from_tuple_with_dimensions),
-    img_and_dim_and_chs=gen_small_image_and_dimensions().flatmap(_gen_channels_from_tuple_with_dimensions),
+    )
+    .flatmap(_gen_channels_from_tuple_with_dimensions),
+    img_and_dim_and_chs=gen_small_image_and_dimensions().flatmap(
+        _gen_channels_from_tuple_with_dimensions
+    ),
 )
-def test_compute_corrected_channels__requires_correct_weights_rank(img_and_dim_and_chs, wts_and_dim_and_chs):
+def test_compute_corrected_channels__requires_correct_weights_rank(
+    img_and_dim_and_chs, wts_and_dim_and_chs
+):
     img: np.ndarray
     img_dim: CanonicalImageDimensions
     chs_img: Channels
@@ -508,10 +558,18 @@ def test_compute_corrected_channels__requires_correct_weights_rank(img_and_dim_a
     chs_wts: Channels
     wts, wts_dim, chs_wts = wts_and_dim_and_chs
     match compute_corrected_channels(
-        image=img, image_dimensions=img_dim, image_channels=chs_img, weights=wts, weights_dimensions=wts_dim, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=img_dim,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=wts_dim,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="error", error=messages):
-            assert f"Weights are of rank {wts.ndim}, but dimensions are of rank {wts_dim.rank}" in messages
+            assert (
+                f"Weights are of rank {wts.ndim}, but dimensions are of rank {wts_dim.rank}"
+                in messages
+            )
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected a Result.Error but got a Result.Ok")
         case unknown:
@@ -519,11 +577,19 @@ def test_compute_corrected_channels__requires_correct_weights_rank(img_and_dim_a
 
 
 @given(
-    wts_and_dim_and_chs=gen_small_weights_and_dimensions().flatmap(_gen_channels_from_tuple_with_dimensions),
-    img_and_dim_and_chs=gen_small_image_and_dimensions()\
-        .flatmap(lambda pair: st.integers(min_value=1, max_value=MAX_NUM_CHANNELS).filter(lambda n_ch: n_ch != snd(pair).c).flatmap(gen_fixed_length_channels).map(lambda chs: (*pair, _build_channels(chs)))),
+    wts_and_dim_and_chs=gen_small_weights_and_dimensions().flatmap(
+        _gen_channels_from_tuple_with_dimensions
+    ),
+    img_and_dim_and_chs=gen_small_image_and_dimensions().flatmap(
+        lambda pair: st.integers(min_value=1, max_value=MAX_NUM_CHANNELS)
+        .filter(lambda n_ch: n_ch != snd(pair).c)
+        .flatmap(gen_fixed_length_channels)
+        .map(lambda chs: (*pair, _build_channels(chs)))
+    ),
 )
-def test_compute_corrected_channels__requires_match_between_image_channels_and_corresponding_axis_length(img_and_dim_and_chs, wts_and_dim_and_chs):
+def test_compute_corrected_channels__requires_match_between_image_channels_and_corresponding_axis_length(
+    img_and_dim_and_chs, wts_and_dim_and_chs
+):
     img: np.ndarray
     img_dim: CanonicalImageDimensions
     chs_img: Channels
@@ -533,10 +599,18 @@ def test_compute_corrected_channels__requires_match_between_image_channels_and_c
     chs_wts: Channels
     wts, wts_dim, chs_wts = wts_and_dim_and_chs
     match compute_corrected_channels(
-        image=img, image_dimensions=img_dim, image_channels=chs_img, weights=wts, weights_dimensions=wts_dim, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=img_dim,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=wts_dim,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="error", error=messages):
-            assert f"Image channels count is {chs_img.count} but dimensions allege {img_dim.c}" in messages
+            assert (
+                f"Image channels count is {chs_img.count} but dimensions allege {img_dim.c}"
+                in messages
+            )
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected a Result.Error but got a Result.Ok")
         case unknown:
@@ -544,11 +618,19 @@ def test_compute_corrected_channels__requires_match_between_image_channels_and_c
 
 
 @given(
-    wts_and_dim_and_chs=gen_small_weights_and_dimensions()\
-        .flatmap(lambda pair: st.integers(min_value=1, max_value=MAX_NUM_CHANNELS).filter(lambda n_ch: n_ch != snd(pair).c).flatmap(gen_fixed_length_channels).map(lambda chs: (*pair, _build_channels(chs)))),
-    img_and_dim_and_chs=gen_small_image_and_dimensions().flatmap(_gen_channels_from_tuple_with_dimensions),
+    wts_and_dim_and_chs=gen_small_weights_and_dimensions().flatmap(
+        lambda pair: st.integers(min_value=1, max_value=MAX_NUM_CHANNELS)
+        .filter(lambda n_ch: n_ch != snd(pair).c)
+        .flatmap(gen_fixed_length_channels)
+        .map(lambda chs: (*pair, _build_channels(chs)))
+    ),
+    img_and_dim_and_chs=gen_small_image_and_dimensions().flatmap(
+        _gen_channels_from_tuple_with_dimensions
+    ),
 )
-def test_compute_corrected_channels__requires_match_between_weights_channels_and_corresponding_axis_length(img_and_dim_and_chs, wts_and_dim_and_chs):
+def test_compute_corrected_channels__requires_match_between_weights_channels_and_corresponding_axis_length(
+    img_and_dim_and_chs, wts_and_dim_and_chs
+):
     img: np.ndarray
     img_dim: CanonicalImageDimensions
     chs_img: Channels
@@ -558,10 +640,18 @@ def test_compute_corrected_channels__requires_match_between_weights_channels_and
     chs_wts: Channels
     wts, wts_dim, chs_wts = wts_and_dim_and_chs
     match compute_corrected_channels(
-        image=img, image_dimensions=img_dim, image_channels=chs_img, weights=wts, weights_dimensions=wts_dim, weights_channels=chs_wts,
+        image=img,
+        image_dimensions=img_dim,
+        image_channels=chs_img,
+        weights=wts,
+        weights_dimensions=wts_dim,
+        weights_channels=chs_wts,
     ):
         case result.Result(tag="error", error=messages):
-            assert f"Weights channels count is {chs_wts.count} but dimensions allege {wts_dim.c}" in messages
+            assert (
+                f"Weights channels count is {chs_wts.count} but dimensions allege {wts_dim.c}"
+                in messages
+            )
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected a Result.Error but got a Result.Ok")
         case unknown:
@@ -637,7 +727,10 @@ def test_channel_meta_name__must_be_string(
     not_name, index, excitation, emission = args
     with pytest.raises(TypeError):
         ChannelMeta(
-            name=not_name, index=index, excitationLambdaNm=excitation, emissionLambdaNm=emission
+            name=not_name,  # type: ignore[arg-type]
+            index=index,
+            excitationLambdaNm=excitation,
+            emissionLambdaNm=emission,
         )
     # NB: no check here on the error message since it's seemingly very difficult to check substrings for this one.
 
@@ -666,7 +759,10 @@ def test_channel_meta_index__must_be_nonnegative_integer(
     name, (not_index, exp_err), excitation, emission = args_and_error
     with pytest.raises(type(exp_err)) as err_ctx:
         ChannelMeta(
-            name=name, index=not_index, excitationLambdaNm=excitation, emissionLambdaNm=emission
+            name=name,
+            index=not_index,  # type: ignore[arg-type]
+            excitationLambdaNm=excitation,
+            emissionLambdaNm=emission,
         )
     assert str(err_ctx.value).startswith(str(exp_err))
 
@@ -702,7 +798,10 @@ def test_channel_meta_emission_wavelength__must_be_null_or_positive_float(
     name, index, (not_emission, exp_err), excitation = args_and_error
     with pytest.raises(type(exp_err)) as err_ctx:
         ChannelMeta(
-            name=name, index=index, emissionLambdaNm=not_emission, excitationLambdaNm=excitation
+            name=name,
+            index=index,
+            emissionLambdaNm=not_emission,  # type: ignore[arg-type]
+            excitationLambdaNm=excitation,
         )
     assert str(err_ctx.value) == str(exp_err)
 
@@ -735,7 +834,7 @@ def test_channel_meta_excitation_wavelength__must_be_null_or_positive_float(
     emission: object
     not_excitation: None | float
     exp_err: TypeError | ValueError
-    name, index, emission, (not_excitation, exp_err) = args_and_error
+    name, index, emission, (not_excitation, exp_err) = args_and_error  # type: ignore[assignment]
     with pytest.raises(type(exp_err)) as err_ctx:
         ChannelMeta(
             name=name, index=index, emissionLambdaNm=emission, excitationLambdaNm=not_excitation
@@ -766,7 +865,7 @@ def test_channels_channel_count__must_be_positive_integer(
     values: Iterable[ChannelMeta]
     expected_prefix: str
     (not_count, expected_prefix), values = args_and_error
-    match Channels.from_count_and_metas(not_count, values):
+    match Channels.from_count_and_metas(not_count, values):  # type: ignore[arg-type]
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected a Result.Error but got Result.Ok")
         case result.Result(tag="error", error=obs_msg):
@@ -898,7 +997,7 @@ def _prep_parse_channels_zarr(
 
 
 parse_channels_from_zarr_with_flattened_mapping_with_count = partial(
-    parse_channels_from_zarr, 
+    parse_channels_from_zarr,
     parse_channels=parse_channels_from_flattened_mapping_with_count,
 )
 
@@ -907,8 +1006,9 @@ def get_parse_channels__parse_prep_pairs(*, nest_metadata_under_key: bool = True
     prep_data = partial(_prep_parse_channels_zarr, nest_metadata_under_key=nest_metadata_under_key)
     return [
         (
-            parse_channels_from_flattened_mapping_with_count, 
-            lambda _, meta: {"metadata": meta} if nest_metadata_under_key else meta),
+            parse_channels_from_flattened_mapping_with_count,
+            lambda _, meta: {"metadata": meta} if nest_metadata_under_key else meta,
+        ),
         (
             parse_channels_from_zarr_with_flattened_mapping_with_count,
             prep_data,
@@ -956,11 +1056,12 @@ def test_parse_channels__good_example_data(
     exp: Channels = Channels(
         count=4,
         values=tuple(
-            ChannelMeta(index=i, **ch_md) for i, ch_md in enumerate(CANONICAL_CHANNEL_DATA)
+            ChannelMeta(index=i, **ch_md)  # type: ignore[arg-type]
+            for i, ch_md in enumerate(CANONICAL_CHANNEL_DATA)
         ),
     )
-    input: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
-    match parse(input):
+    input_data: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
+    match parse(input_data):
         case result.Result(tag="error", error=messages):
             pytest.fail(
                 f"Expected parse success but got a failure, with {len(messages)} message(s): {'; '.join(messages)}"
@@ -979,10 +1080,10 @@ def test_parse_channels__must_have_channel_count(
     parse: Callable[[_ParseInput], Result[Channels, list[str]]],
     prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
 ) -> None:
-    input: _ParseInput = prepare(
+    input_data: _ParseInput = prepare(
         tmp_path, {k: v for k, v in CANONICAL_METADATA.items() if k != CHANNEL_COUNT_KEY}
     )
-    match parse(input):
+    match parse(input_data):
         case result.Result(tag="error", error=messages):
             assert messages == [f"Missing the key ({CHANNEL_COUNT_KEY}) for number of channels"]
         case result.Result(tag="ok", ok=_):
@@ -996,7 +1097,7 @@ def test_parse_channels__must_have_channel_count(
 def test_parse_channels_from_zarr__prohibits_path_as_raw_string(tmp_path: Path) -> None:
     match parse_channels_from_zarr_with_flattened_mapping_with_count(str(tmp_path)):
         case result.Result(tag="error", error=messages):
-            assert messages == [f"Cannot parse channels from value of type str"]
+            assert messages == ["Cannot parse channels from value of type str"]
         case result.Result(tag="ok", ok=_):
             pytest.fail("Expected parse failure but got a success")
         case unknown:
@@ -1018,8 +1119,8 @@ def test_parse_channels__fails_when_metadata_are_not_under_proper_key(
     parse: Callable[[_ParseInput], Result[Channels, list[str]]],
     prepare: Callable[[Path, Mapping[str, object]], _ParseInput],
 ) -> None:
-    input: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
-    match parse(input):
+    input_data: _ParseInput = prepare(tmp_path, CANONICAL_METADATA)
+    match parse(input_data):
         case result.Result(tag="error", error=messages):
             assert len(messages) == 1
             assert messages[0].startswith("Missing metadata key in given mapping")

@@ -1,22 +1,23 @@
 """Computation of the weights/scalings for pixel values, based on nonuniform illumination across a field of view"""
 
 import argparse
-from functools import partial
 import itertools
 import json
 import logging
 import re
 import sys
-from pathlib import Path 
-from typing import Callable, Iterable, Mapping, TypeAlias
+from collections.abc import Callable, Iterable, Mapping
+from functools import partial
+from pathlib import Path
+from typing import TypeAlias
 
 import attrs
+import numpy as np
+import zarr  # type: ignore[import-untyped]
 from expression import Option, Result, fst, result, snd
 from expression.collections import TypedArray
 from gertils.pathtools import ExtantFile, ExtantFolder, NonExtantPath, PathWrapperException
-import numpy as np
 from ome_zarr.axes import Axes  # type: ignore[import-untyped]
-import zarr  # type: ignore[import-untyped]
 
 from illumifix import PROJECT_NAME, ZARR_FORMAT
 from illumifix.expression_utilities import sequence_accumulate_errors, traverse_accumulate_errors
@@ -27,7 +28,7 @@ from illumifix.zarr_tools import (
     ChannelMeta,
     Channels,
     JsonEncoderForChannelMeta,
-    ZarrAxis,
+    OmeZarrAxis,
     extract_single_channel_single_z_data,
     parse_channels_from_flattened_mapping_with_count,
     parse_channels_from_zarr,
@@ -71,7 +72,7 @@ def parse_target_path(
     img_path: ExtantFolder,
 ) -> Result[ArrayWithDims, PathErrPair]:
     p: Path = img_path.path
-    print("Parsing path: ", p)
+    logging.info(f"Parsing path: {p}")  # noqa: G004
     group: zarr.Group = zarr.open_group(p, mode="r")
     return parse_single_array_and_dimensions_from_zarr_group(group=group).map_error(
         lambda e: (p, e)
@@ -81,7 +82,7 @@ def parse_target_path(
 def unsafe_extract_single_channel_single_z_data(
     *, ch: ChannelIndex, img: np.ndarray, dim: CanonicalImageDimensions
 ) -> np.ndarray:
-    print(f"Extracting data from channel {ch}")
+    logging.info(f"Extracting data from channel {ch}")  # noqa: G004
     match extract_single_channel_single_z_data(ch=ch, img=img, dim=dim):
         case result.Result(tag="ok", ok=data):
             return data
@@ -125,7 +126,7 @@ def validate_dimensions(
         dim: CanonicalImageDimensions
         data_path: ExtantFolder
         data_path, (_, dim) = pair
-        print("Validating dimensions: ", data_path.path)
+        logging.info(f"Validating dimensions: {data_path.path}")  # noqa: G004
         return _validate_dimensions_single(obs_dim=dim, exp_dim=canonical).map_error(
             lambda messages: (
                 data_path.path,
@@ -144,7 +145,7 @@ def _validate_dimensions_single(
     exp_dim: CanonicalImageDimensions,
 ) -> Result[CanonicalImageDimensions, list[str]]:
     problems: list[str] = []
-    for ax in ZarrAxis:
+    for ax in OmeZarrAxis:
         num_obs: int = obs_dim.get_length(ax)
         num_exp: int = exp_dim.get_length(ax)
         if num_obs != num_exp:
@@ -156,7 +157,7 @@ def _validate_dimensions_single(
 
 def build_target_path(base_path: Path) -> Result[ExtantFolder, PathErrPair]:
     img_path: Path = base_path / "nuc_images_zarr"
-    print("Building target path: ", img_path)
+    logging.info(f"Building target path: {img_path}")  # noqa: G004
     try:
         return Result.Ok(ExtantFolder(img_path))
     except PathWrapperException:
@@ -164,7 +165,7 @@ def build_target_path(base_path: Path) -> Result[ExtantFolder, PathErrPair]:
 
 
 def expand_target_folder(folder: ExtantFolder) -> Result[list[ExtantFolder], PathErrPair]:
-    print("Finding data paths: ", folder.path)
+    logging.info(f"Finding data paths: {folder.path}")  # noqa: G004
 
     extras: list[Path] = []
     goods: list[ExtantFolder] = []
@@ -208,8 +209,10 @@ def determine_channel_order(
         return Result.Error(
             f"New channels' count is {new_channels.count}, but reference count is {ref_channels.count}"
         )
-    
-    lookup: Mapping[ChannelKey, int] = {ch.get_lookup_key(): i for i, ch in enumerate(ref_channels.values)}
+
+    lookup: Mapping[ChannelKey, int] = {
+        ch.get_lookup_key(): i for i, ch in enumerate(ref_channels.values)
+    }
     get_ch_index: Callable[[ChannelMeta], Result[ChannelIndex, ChannelMeta]] = (
         lambda ch: Option.of_optional(lookup.get(ch.get_lookup_key())).to_result(ch)
     )
@@ -263,7 +266,7 @@ def average_all_data_per_channel(
     canonical_dimensions: CanonicalImageDimensions,
     data: list[tuple[ExtantFolder, list[int], zarr.Array, CanonicalImageDimensions]],
 ) -> Result[tuple[list[tuple[ChannelMeta, np.ndarray]], list[Path]], list[PathErrPair]]:
-    print("Averaging data per image channel")
+    logging.info("Averaging data per image channel")
 
     def proc_one(
         *,
@@ -322,7 +325,7 @@ def average_all_data_per_channel(
             )
         )
 
-    # Iterable[Result[tuple[ChannelMeta, np.ndarray], list[PathErrPair]]]
+    # Underlying type: Iterable[Result[tuple[ChannelMeta, np.ndarray], list[PathErrPair]]]
     per_channel_result: TypedArray = TypedArray.of_seq(enumerate(channels.values)).map(
         lambda i_ch_pair: TypedArray.of_seq(data[1:])
         .fold(
@@ -399,7 +402,7 @@ def workflow(
                         "multiscales": [
                             {
                                 "axes": Axes(
-                                    [ax.name for ax in ZarrAxis],
+                                    [ax.name for ax in OmeZarrAxis],
                                     fmt=ZARR_FORMAT,
                                 ).to_list()
                             },
@@ -430,7 +433,7 @@ def main(cmdl: list[str]) -> None:
     opts = _parse_cmdl(cmdl)
     pathlist: Path = opts.path_list_file.path
     logging.info("Reading paths list: %s", pathlist)
-    with open(pathlist) as fh:
+    with pathlist.open(mode="r") as fh:
         raw_base_paths: list[Path] = [Path(line.strip()) for line in fh.readlines() if line.strip()]
     logging.info("Running workflow with %d base paths", len(raw_base_paths))
     workflow(

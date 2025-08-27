@@ -188,4 +188,6 @@ ignore = [
     "D103", # Missing docstring in public function
     # In scripts, we also don't care about custom exception types since the error is usually fatal.
     "TRY002", # Create your own exception
+    # We don't care if scripts are interpreted as an implicit namespace package.
+    "INP001", # part of an implicit namespace package
 ]

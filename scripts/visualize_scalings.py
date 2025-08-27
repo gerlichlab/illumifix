@@ -2,22 +2,22 @@
 
 import argparse
 import logging
-from pathlib import Path
 import sys
-from typing import Iterable
+from collections.abc import Iterable
+from pathlib import Path
 
 import attrs
-from expression import result
-from gertils import ExtantFolder
 import matplotlib.pyplot as plt
 import numpy as np
 import skimage.transform
 import zarr
+from expression import result
+from gertils import ExtantFolder
 
 from illumifix.zarr_tools import (
     CanonicalImageDimensions,
     ChannelIndex,
-    ZarrAxis,
+    OmeZarrAxis,
     parse_channels_from_mapping_with_channels_list,
     parse_channels_from_zarr,
     parse_single_array_and_dimensions_from_zarr_group,
@@ -67,7 +67,7 @@ class HeatmapSize2D:
                         )
                     if obs % exp != 0:
                         logging.warning(
-                            f"For {attr}, image pixel count ({obs}) is not evenly divisible by {exp}"
+                            f"For {attr}, image pixel count ({obs}) is not evenly divisible by {exp}"  # noqa: G004
                         )
             case shape:
                 raise ValueError(
@@ -90,7 +90,7 @@ def unsafe_get_yx_data(
     weights: zarr.Array | np.ndarray,
 ) -> np.ndarray:
     match dimensions.get_axes_data(
-        weights, ((ZarrAxis.T, 0), (ZarrAxis.C, channel_index), (ZarrAxis.Z, 0))
+        weights, ((OmeZarrAxis.T, 0), (OmeZarrAxis.C, channel_index), (OmeZarrAxis.Z, 0))
     ):
         case result.Result(tag="ok", ok=arr):
             return arr
@@ -122,7 +122,7 @@ def workflow(*, zarr_root: Path, output_folder: Path, overwrite: bool = False) -
             result.Result(tag="ok", ok=channels),
             result.Result(tag="ok", ok=(weights, dimensions)),
         ):
-            logging.info(f"Weights shape: {weights.shape}")
+            logging.info(f"Weights shape: {weights.shape}")  # noqa: G004
             match dimensions:
                 case CanonicalImageDimensions(t=1, c=_, z=1, y=_, x=_):
                     visualization_output_path: Path = output_folder
@@ -130,7 +130,7 @@ def workflow(*, zarr_root: Path, output_folder: Path, overwrite: bool = False) -
                         raise FileExistsError(visualization_output_path)
                     visualization_output_path.mkdir(exist_ok=True)
                     for i, ch in enumerate(channels.values):
-                        logging.debug(f"Processing {i}-st/-nd/-th channel: {ch.name}")
+                        logging.debug(f"Processing {i}-st/-nd/-th channel: {ch.name}")  # noqa: G004
                         logging.debug("Computing averaged weights for heatmap")
                         # TODO: ensure yx vs. xy ordering.
                         wt_2d: np.ndarray = HEATMAP_SIZE.resize_image(

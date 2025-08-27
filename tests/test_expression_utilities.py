@@ -3,13 +3,13 @@
 from collections.abc import Callable
 from typing import TypeVar
 
+import hypothesis
 import pytest
 from expression import Result, result
-
-import hypothesis
 from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
+
 from illumifix import expression_utilities as expr_util
 
 _TSource = TypeVar("_TSource")
