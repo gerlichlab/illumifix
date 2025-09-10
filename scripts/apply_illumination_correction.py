@@ -30,12 +30,12 @@ def _parse_cmdl(cmdl: list[str]) -> argparse.Namespace:
         "-W", "--weights", type=Path, required=True, help="Path to the (ZARR) weights/scalings"
     )
     parser.add_argument(
-        "-O", "--output", type=Path, required=True, help="Path to which to write the corrected data"
+        "-O", "--output-folder", type=Path, required=True, help="Path to which to write the corrected data"
     )
     return parser.parse_args(cmdl)
 
 
-def workflow(*, image_path: Path, weights_path: Path, output_path: Path) -> None:
+def workflow(*, image_path: Path, weights_path: Path, output_folder: Path) -> None:
     image_group: zarr.Group = zarr.open_group(image_path, mode="r")
     weights_group: zarr.Group = zarr.open_group(weights_path, mode="r")
     logging.info("Parsing image and weights/scalings data")
@@ -60,11 +60,11 @@ def workflow(*, image_path: Path, weights_path: Path, output_path: Path) -> None
                 case result.Result(tag="ok", ok=img_by_channel):
                     logging.debug("Stacking channels and swapping axes...")
                     corrected: np.ndarray = np.stack(img_by_channel).swapaxes(0, 1)
-                    logging.info("Writing output: %s", output_path)
-                    _write_group(data=corrected, path=output_path)
+                    logging.info("Writing output: %s", output_folder)
+                    _write_group(data=corrected, path=output_folder)
                     logging.debug("Copying ZARR metadata")
-                    shutil.copy(image_path / ".zattrs", output_path / ".zattrs")
-                    shutil.copy(image_path / ".zgroup", output_path / ".zgroup")
+                    shutil.copy(image_path / ".zattrs", output_folder / ".zattrs")
+                    shutil.copy(image_path / ".zgroup", output_folder / ".zgroup")
                 case result.Result(tag="error", error=messages):
                     raise Exception(
                         f"{len(messages)} error(s) computing corrected image per channel: {', '.join(messages)}"
@@ -88,7 +88,7 @@ def _write_group(*, data: np.ndarray, path: Path) -> zarr.Group:
 
 def main(args: list[str]) -> None:
     opts = _parse_cmdl(args)
-    workflow(image_path=opts.image, weights_path=opts.weights, output_path=opts.output)
+    workflow(image_path=opts.image, weights_path=opts.weights, output_folder=opts.output_folder)
 
 
 if __name__ == "__main__":
