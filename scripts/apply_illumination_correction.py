@@ -61,7 +61,7 @@ def workflow(*, image_path: Path, weights_path: Path, output_folder: Path) -> No
                     logging.debug("Stacking channels and swapping axes...")
                     corrected: np.ndarray = np.stack(img_by_channel).swapaxes(0, 1)
                     logging.info("Writing output: %s", output_folder)
-                    _write_group(data=corrected, path=output_folder)
+                    write_group(data=corrected, path=output_folder)
                     logging.debug("Copying ZARR metadata")
                     shutil.copy(image_path / ".zattrs", output_folder / ".zattrs")
                     shutil.copy(image_path / ".zgroup", output_folder / ".zgroup")
@@ -79,7 +79,7 @@ def workflow(*, image_path: Path, weights_path: Path, output_folder: Path) -> No
             )
 
 
-def _write_group(*, data: np.ndarray, path: Path) -> zarr.Group:
+def write_group(*, data: np.ndarray, path: Path) -> zarr.Group:
     store: zarr.DirectoryStore = zarr.DirectoryStore(path)
     root: zarr.Group = zarr.group(store=store)
     root.create_dataset("0", data=data)
@@ -88,6 +88,8 @@ def _write_group(*, data: np.ndarray, path: Path) -> zarr.Group:
 
 def main(args: list[str]) -> None:
     opts = _parse_cmdl(args)
+    if opts.output_folder == opts.image:
+        raise ValueError(f"The image path and output path are the same: {opts.image}")
     workflow(image_path=opts.image, weights_path=opts.weights, output_folder=opts.output_folder)
 
 
